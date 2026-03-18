@@ -370,6 +370,7 @@ tr:last-child td{border-bottom:none}
             <input id="buscar-esc" placeholder="🔍 Buscar..." style="width:140px;font-size:12px" oninput="renderEscs()">
             <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇️ CSV</button>
             <button class="btn btn-warning btn-sm" onclick="abrirCapturaMonto()" style="background:var(--amarillo);color:#fff">💲 Montos</button>
+            <button class="btn btn-danger btn-sm" onclick="limpiarAnio()">🗑️ Limpiar año</button>
             <button class="btn btn-ghost btn-sm" onclick="backup()">💾 Backup</button>
           </div>
         </div>
@@ -815,7 +816,14 @@ function docsReq(tipo){
     {id:'id_apoderado',label:'Identificación + domicilio del apoderado (si aplica)',vig:true,opc:true},
   ];
 }
-function getKey(p){return(p.rfc||p.nombre||'').toUpperCase().replace(/\s+/g,'_').replace(/[^A-Z0-9_]/g,'');}
+function getKey(p){
+  // Intentar RFC primero, luego nombre, luego combinación
+  const base=(p.rfc||p.nombre||'').toUpperCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'') // quitar acentos
+    .replace(/[^A-Z0-9\s]/g,'').replace(/\s+/g,'_').trim();
+  // Si el key quedó muy corto o vacío, usar timestamp como fallback
+  return base.length>2 ? base : 'PERSONA_'+Date.now();
+}
 function updExps(esc){
   const nid=curNot;if(!window.DB.expedientes[nid])window.DB.expedientes[nid]={};
   const exp=window.DB.expedientes[nid];
@@ -1093,6 +1101,16 @@ function editEsc(id){
   pA=JSON.parse(JSON.stringify(e.pA.personas||[]));pB=JSON.parse(JSON.stringify(e.pB.personas||[]));
   onNatChange();calcSemaforo();renderPs();window.scrollTo({top:0,behavior:'smooth'});
 }
+function limpiarAnio(){
+  const n=getNot();if(!n)return;
+  const total=(n.years[curYear]?.escrituras||[]).length;
+  if(!total){alert('No hay escrituras en este año.');return;}
+  if(!confirm(`¿Eliminar TODAS las ${total} escrituras de ${curYear}?\n\nEsta acción no se puede deshacer.`))return;
+  n.years[curYear]={escrituras:[]};
+  saveDB();renderEscs();
+  alert(`✅ Se eliminaron todas las escrituras de ${curYear}.`);
+}
+
 function delEsc(id){
   if(!confirm('¿Eliminar escritura?'))return;
   const yd=getYD();yd.escrituras=yd.escrituras.filter(e=>e.id!==id);saveDB();renderEscs();
@@ -1233,11 +1251,31 @@ function procesarFilas(rows){
     const numEsc=parseInt(c[0]);
     if(!numEsc||isNaN(numEsc))return;
 
-    // Col B: Fecha dd/mm/yyyy → yyyy-mm-dd
+    // Col B: Fecha — puede venir como número serial Excel, dd/mm/yyyy, o texto con letras
     let fecha=(c[1]||'').toString().trim();
-    if(fecha.includes('/')){
+    // Caso 1: número serial de Excel (ej: 44927)
+    if(/^\d{4,5}$/.test(fecha)){
+      const serial=parseInt(fecha);
+      const d=new Date(Date.UTC(1899,11,30)+(serial*86400000));
+      fecha=`${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+    }
+    // Caso 2: dd/mm/yyyy o d/m/yyyy
+    else if(fecha.includes('/')){
       const p=fecha.split('/');
       if(p.length===3)fecha=`${p[2].padStart(4,'20')}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`;
+    }
+    // Caso 3: texto con letras "2 DE ENERO DE 2021" o "2 de enero de 2021"
+    else if(/[a-zA-ZáéíóúÁÉÍÓÚ]/.test(fecha)){
+      const meses={'enero':'01','febrero':'02','marzo':'03','abril':'04','mayo':'05','junio':'06',
+        'julio':'07','agosto':'08','septiembre':'09','octubre':'10','noviembre':'11','diciembre':'12'};
+      const ft=fecha.toLowerCase().replace(/\s+de\s+|\s+del\s+/g,'|');
+      const partes=ft.split('|').map(s=>s.trim());
+      if(partes.length>=3){
+        const d2=partes[0].replace(/\D/g,'').padStart(2,'0');
+        const m2=meses[partes[1]]||'01';
+        const a2=partes[2].replace(/\D/g,'');
+        if(d2&&m2&&a2)fecha=`${a2}-${m2}-${d2}`;
+      }
     }
 
     // Col C: Naturaleza del acto
