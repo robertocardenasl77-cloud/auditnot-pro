@@ -39,8 +39,25 @@ async function saveDB(){
     window._syncStatus('❌ Error al guardar: '+e.message);
     console.error(e);
   } finally {
-    // Esperar un momento antes de reactivar el listener
-    setTimeout(()=>{ _saving = false; }, 2000);
+    // Esperar 5 segundos antes de reactivar el listener (suficiente para 400+ escrituras)
+    setTimeout(()=>{ _saving = false; }, 5000);
+  }
+}
+
+// ── Guardar inmediato — sin debounce, para importaciones grandes ──
+async function saveDBImmediate(){
+  _saving = true;
+  window._syncStatus('💾 Guardando...');
+  try{
+    await setDoc(doc(db,'auditnot','main'), window.DB);
+    window._syncStatus('✅ Sincronizado');
+    // Guardar también en localStorage como respaldo
+    try{localStorage.setItem('anpro_backup',JSON.stringify(window.DB));}catch(_){}
+  }catch(e){
+    window._syncStatus('❌ Error al guardar: '+e.message);
+    console.error(e);
+  } finally {
+    setTimeout(()=>{ _saving = false; }, 5000);
   }
 }
 
@@ -61,10 +78,9 @@ async function loadDB(){
     window._syncStatus('🟢 Conectado');
     window._onDBReady();
 
-    // Escuchar cambios en tiempo real (otros usuarios)
-    // Solo actualiza si NO estamos en medio de un guardado
+    // Escuchar cambios en tiempo real — ignorar si estamos guardando
     onSnapshot(doc(db,'auditnot','main'), snap=>{
-      if(_saving) return; // Ignorar snapshots mientras guardamos
+      if(_saving) return;
       if(snap.exists()){
         window.DB = snap.data();
         if(!window.DB.notarias)  window.DB.notarias={};
@@ -84,6 +100,7 @@ async function loadDB(){
 
 // Exponer funciones al scope global
 window._saveDB = saveDB;
+window._saveDBImmediate = saveDBImmediate;
 window._loadDB = loadDB;
 window._setSaving = (val) => { _saving = val; };
 </script>
@@ -1358,10 +1375,18 @@ function procesarFilas(rows){
 
   // Vincular expedientes únicos
   escsProcesadas.forEach(e=>updExps(e));
-  saveDB();renderEscs();renderExps();
 
-  const noPasoCount=escsProcesadas.filter(e=>e.noPaso).length;
-  alert(`✅ ${cnt} escrituras importadas.\n📋 ${noPasoCount} marcadas como "NO PASÓ" (no generan aviso).\n\n${escsProcesadas.filter(e=>!e.monto&&['inmueble','pm'].includes(e.tipo)).length} escrituras vulnerables sin monto — usa el botón 💲 Montos para capturarlos.`);
+  // Guardar INMEDIATAMENTE sin debounce — crítico para evitar que onSnapshot sobreescriba
+  if(window._saveDBImmediate){
+    window._saveDBImmediate().then(()=>{
+      renderEscs();renderExps();
+      const noPasoCount=escsProcesadas.filter(e=>e.noPaso).length;
+      const sinMonto=escsProcesadas.filter(e=>!e.monto&&['inmueble','pm'].includes(e.tipo)).length;
+      alert(`✅ ${cnt} escrituras importadas y guardadas.\n📋 ${noPasoCount} marcadas como "NO PASÓ".\n${sinMonto>0?`\n⚠️ ${sinMonto} escrituras vulnerables sin monto — usa el botón 💲 Montos.`:''}`);
+    });
+  } else {
+    saveDB();renderEscs();renderExps();
+  }
   document.getElementById('excel-file').value='';
 }
 
