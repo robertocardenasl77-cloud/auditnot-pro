@@ -357,14 +357,25 @@ tr:last-child td{border-bottom:none}
             <div id="lista-stats" class="text-sm"></div>
           </div>
           <div class="flex">
-            <input id="buscar-esc" placeholder="🔍 Buscar..." style="width:170px;font-size:12px" oninput="renderEscs()">
+            <select id="filtro-tipo" style="font-size:12px;width:150px" onchange="renderEscs()">
+              <option value="">Todos los tipos</option>
+              <option value="vulnerable">⚡ Solo vulnerables</option>
+              <option value="inmueble">🔵 Inmueble</option>
+              <option value="pm">🟠 PM / Fideicomiso</option>
+              <option value="siempre">🔴 Siempre aviso</option>
+              <option value="revisar">🟡 Por revisar</option>
+              <option value="no_paso">🚫 No pasó (no formalizada)</option>
+              <option value="no">⚫ No vulnerable</option>
+            </select>
+            <input id="buscar-esc" placeholder="🔍 Buscar..." style="width:140px;font-size:12px" oninput="renderEscs()">
             <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇️ CSV</button>
+            <button class="btn btn-warning btn-sm" onclick="abrirCapturaMonto()" style="background:var(--amarillo);color:#fff">💲 Montos</button>
             <button class="btn btn-ghost btn-sm" onclick="backup()">💾 Backup</button>
           </div>
         </div>
         <div class="tbl-wrap">
           <table>
-            <thead><tr><th>N°</th><th>Fecha</th><th>Naturaleza</th><th>Parte A</th><th>Parte B</th><th>Monto</th><th>Estado</th><th>Exp.</th><th></th></tr></thead>
+            <thead><tr><th>N°</th><th>Fecha</th><th>Naturaleza</th><th>Parte A</th><th>Parte B</th><th>Monto</th><th>Estado</th><th>Aviso</th><th>Exp.</th><th></th></tr></thead>
             <tbody id="tbody-escs"></tbody>
           </table>
         </div>
@@ -454,7 +465,61 @@ tr:last-child td{border-bottom:none}
 
 </div><!-- /main -->
 
-<!-- MODAL EXPEDIENTE -->
+<!-- MODAL CAPTURA MONTOS EN LOTE -->
+<div class="modal-overlay" id="modal-montos">
+  <div class="modal" style="max-width:700px">
+    <button class="modal-close" onclick="closeM('modal-montos')">✕</button>
+    <div class="modal-title">💲 Capturar Montos en Lote</div>
+    <div class="alert alert-info" style="margin-bottom:14px">
+      Solo se muestran escrituras vulnerables con monto en $0. Captura el monto de cada una desde el expediente físico.
+    </div>
+    <div id="montos-lista"></div>
+    <div style="margin-top:16px;text-align:right">
+      <button class="btn btn-primary" onclick="guardarMontos()">💾 Guardar todos los montos</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function abrirCapturaMonto(){
+  const escs=getEscs().filter(e=>['inmueble','pm','siempre'].includes(e.tipo)&&!e.monto);
+  const lista=document.getElementById('montos-lista');
+  if(!escs.length){alert('✅ Todas las escrituras vulnerables ya tienen monto capturado.');return;}
+  lista.innerHTML=`
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>N°</th><th>Fecha</th><th>Naturaleza</th><th>Otorgantes</th><th>Monto ($)</th></tr></thead>
+        <tbody>${escs.sort((a,b)=>a.num-b.num).map(e=>`
+          <tr>
+            <td><b>${e.num}</b></td>
+            <td>${e.fecha}</td>
+            <td style="max-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${NAT_LABEL[e.naturaleza]||e.naturaleza}</td>
+            <td style="max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${(e.pA.personas||[]).map(p=>p.nombre).filter(Boolean).join(', ')||'—'}</td>
+            <td><input type="number" data-id="${e.id}" placeholder="0.00" style="width:130px;padding:5px 8px;font-size:12px" min="0"></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+  document.getElementById('modal-montos').classList.add('open');
+}
+
+function guardarMontos(){
+  const inputs=document.querySelectorAll('#montos-lista input[data-id]');
+  const yd=getYD();if(!yd)return;
+  let cnt=0;
+  inputs.forEach(inp=>{
+    const monto=parseFloat(inp.value)||0;
+    if(!monto)return;
+    const esc=yd.escrituras.find(e=>e.id===inp.dataset.id);
+    if(esc){esc.monto=monto;cnt++;}
+  });
+  if(!cnt){alert('No ingresaste ningún monto.');return;}
+  saveDB();renderEscs();closeM('modal-montos');
+  alert(`✅ ${cnt} montos guardados correctamente.`);
+}
+</script>
+
+
 <div class="modal-overlay" id="modal-exp">
   <div class="modal" style="max-width:820px">
     <button class="modal-close" onclick="closeM('modal-exp')">✕</button>
@@ -954,7 +1019,14 @@ function saveExp(key){
 function renderEscs(){
   const escs=getEscs();
   const busq=(document.getElementById('buscar-esc').value||'').toLowerCase();
-  let filtered=escs.filter(e=>!busq||[e.num,e.naturaleza,...(e.pA.personas||[]).map(p=>p.nombre+p.rfc),...(e.pB.personas||[]).map(p=>p.nombre+p.rfc),e.obs].join(' ').toLowerCase().includes(busq)).sort((a,b)=>a.num-b.num);
+  const filtroTipo=(document.getElementById('filtro-tipo').value||'');
+  let filtered=escs.filter(e=>{
+    const matchBusq=!busq||[e.num,e.naturaleza,...(e.pA.personas||[]).map(p=>p.nombre+p.rfc),...(e.pB.personas||[]).map(p=>p.nombre+p.rfc),e.obs].join(' ').toLowerCase().includes(busq);
+    const matchTipo=!filtroTipo||
+      (filtroTipo==='vulnerable'&&['inmueble','pm','siempre'].includes(e.tipo))||
+      e.tipo===filtroTipo;
+    return matchBusq&&matchTipo;
+  }).sort((a,b)=>a.num-b.num);
   const vul=filtered.filter(e=>['inmueble','pm','siempre'].includes(e.tipo));
   const aviso=filtered.filter(e=>{if(e.tipo==='siempre')return true;if(!['inmueble','pm'].includes(e.tipo)||!e.monto)return false;const u=getUmbral(e.fecha,e.tipo==='pm'?'pm':'inmueble');return u&&e.monto>=u.umbral;});
   document.getElementById('lista-titulo').textContent=`Escrituras ${curYear} — ${curNot?window.DB.notarias[curNot].nombre:''}`;
@@ -965,8 +1037,8 @@ function renderEscs(){
   const expData=window.DB.expedientes[curNot]||{};
   tb.innerHTML=filtered.map(e=>{
     const tipo=e.tipo;
-    const cc=tipo==='inmueble'?'chip-azul':tipo==='pm'?'chip-naranja':tipo==='siempre'?'chip-rojo':tipo==='revisar'?'chip-amarillo':'chip-gris';
-    const cl=tipo==='inmueble'?'Inmueble':tipo==='pm'?'PM/Fid.':tipo==='siempre'?'Siempre ⚠️':tipo==='revisar'?'Revisar':'No vuln.';
+    const cc=tipo==='inmueble'?'chip-azul':tipo==='pm'?'chip-naranja':tipo==='siempre'?'chip-rojo':tipo==='revisar'?'chip-amarillo':tipo==='no_paso'?'chip-gris':'chip-gris';
+    const cl=tipo==='inmueble'?'Inmueble':tipo==='pm'?'PM/Fid.':tipo==='siempre'?'Siempre ⚠️':tipo==='revisar'?'Revisar':tipo==='no_paso'?'🚫 No pasó':'No vuln.';
     let mH='—';
     if(e.monto&&tipo!=='no'){
       if(tipo==='siempre')mH=`<span class="chip chip-rojo" style="font-size:10px">Aviso</span>`;
@@ -980,12 +1052,32 @@ function renderEscs(){
     for(const p of[...(e.pA.personas||[]),...(e.pB.personas||[])]){
       if(!p.nombre&&!p.rfc)continue;
       const k=getKey(p);if(expData[k]&&getPct(expData[k])<100){expW='⚠️';break;}}
+    // Aviso urgente — plazo 30 días calendario desde la fecha del acto
+    let avisoHtml='—';
+    const avData=(window.DB.avisos[curNot]||{})[e.num]||{};
+    if(['inmueble','pm','siempre'].includes(tipo)){
+      const necesitaAviso=tipo==='siempre'||(e.monto&&(()=>{const u=getUmbral(e.fecha,tipo==='pm'?'pm':'inmueble');return u&&e.monto>=u.umbral;})());
+      if(avData.estado==='presentado'){
+        avisoHtml=`<span class="chip chip-verde">✅ Presentado</span>`;
+      } else if(necesitaAviso||tipo==='siempre'){
+        const diasDesde=e.fecha?(Math.floor((new Date()-new Date(e.fecha+'T12:00:00'))/86400000)):0;
+        const diasRestantes=30-diasDesde;
+        if(diasRestantes<0) avisoHtml=`<span class="chip chip-rojo">🚨 Vencido</span>`;
+        else if(diasRestantes<=5) avisoHtml=`<span class="chip chip-rojo">⚠️ ${diasRestantes}d</span>`;
+        else if(diasRestantes<=15) avisoHtml=`<span class="chip chip-amarillo">⏳ ${diasRestantes}d</span>`;
+        else avisoHtml=`<span class="chip chip-gris">⏳ ${diasRestantes}d</span>`;
+      } else {
+        avisoHtml=`<span style="color:var(--gris);font-size:11px">Sin umbral</span>`;
+      }
+    }
+
     return`<tr>
       <td><b>${e.num}</b></td><td>${e.fecha}</td>
       <td style="max-width:130px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${NAT_LABEL[e.naturaleza]||e.naturaleza}">${NAT_LABEL[e.naturaleza]||e.naturaleza}</td>
       <td style="max-width:130px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${pAt}">${pAt}</td>
       <td style="max-width:130px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${pBt}">${pBt}</td>
       <td>${mH}</td><td><span class="chip ${cc}">${cl}</span></td>
+      <td>${avisoHtml}</td>
       <td title="${expW==='⚠️'?'Expediente(s) con docs faltantes':''}">${expW}</td>
       <td><button class="btn btn-ghost btn-xs" onclick="editEsc('${e.id}')">✏️</button>
       <button class="btn btn-danger btn-xs" onclick="delEsc('${e.id}')">🗑️</button></td>
@@ -1134,9 +1226,10 @@ function csvToRows(text){
 
 function procesarFilas(rows){
   let cnt=0;const yd=getYD();if(!yd)return;
+  const escsProcesadas=[];
 
   rows.forEach(c=>{
-    // Ignorar filas vacías o de encabezado (col A debe ser número)
+    // Col A: número de escritura (debe ser número)
     const numEsc=parseInt(c[0]);
     if(!numEsc||isNaN(numEsc))return;
 
@@ -1147,54 +1240,79 @@ function procesarFilas(rows){
       if(p.length===3)fecha=`${p[2].padStart(4,'20')}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`;
     }
 
-    // Col C: Naturaleza del acto (texto libre)
+    // Col C: Naturaleza del acto
     const natTexto=(c[2]||'').toString().trim();
     const natMapeada=mapearNaturaleza(natTexto.toLowerCase())||'otro_no_vulnerable';
 
-    // Col D: Otorgantes — separar por " Y " o "," en múltiples personas
+    // Col D: Otorgantes — separar por coma o " Y "/" y "
     const otorgantesTexto=(c[3]||'').toString().trim();
-    const otorgantes=otorgantesTexto.split(/\s+Y\s+|,/).map(n=>n.trim()).filter(Boolean);
+    const otorgantes=otorgantesTexto
+      .split(/,|\bY\b|\by\b/)
+      .map(n=>n.trim())
+      .filter(n=>n.length>2);
     const personas=otorgantes.map((nombre,i)=>({
-      id:'i'+Date.now()+'_'+i,
+      id:'i'+Date.now()+'_'+i+'_'+Math.random().toString(36).substr(2,3),
       nombre,rfc:'',tipo:'pf',
       pct:otorgantes.length===1?'100':(100/otorgantes.length).toFixed(1)
     }));
 
-    // Col F: Inciso (a, b, c, d, e) — usar para refinar tipo si el mapeador falló
-    const inciso=(c[5]||'').toString().trim().toLowerCase();
+    // Col E: PASÓ ANTE MÍ — si dice NO, marcar como no formalizada
+    const paso=(c[4]||'').toString().trim().toUpperCase();
+    const noPaso=paso==='NO'||paso.includes('NO PAS');
+
+    // Col F: Inciso — ahora en columna K (índice 10)
+    const inciso=(c[10]||'').toString().trim().toLowerCase();
+
+    // Col H: Monto — columna H (índice 7, sin cambio)
+    const monto=parseFloat((c[7]||'').toString().replace(/[,$\s]/g,''))||0;
+
+    // Col I: ¿Requiere aviso? (automática en Excel — se ignora, el sistema recalcula)
+    // Col J: Vulnerable — ahora en columna J (índice 9)
+    const vulTexto=(c[9]||'').toString().trim().toUpperCase();
+
+    // Determinar tipo
     let tipo=NAT_TIPO[natMapeada]||'revisar';
+    // Refinar con inciso
     if(tipo==='revisar'||tipo==='otro_no_vulnerable'){
       if(inciso==='a')tipo='inmueble';
       else if(inciso==='b')tipo='siempre';
       else if(inciso==='c'||inciso==='d')tipo='pm';
       else if(inciso==='e')tipo='siempre';
-      else if(inciso==='—'||inciso==='')tipo='no';
+      else if(inciso==='—'||inciso===''||inciso==='-')tipo='no';
     }
+    // Refinar con columna I del auditor
+    if(vulTexto==='NO')tipo='no';
+    if(vulTexto==='SÍ'||vulTexto==='SI'){
+      if(tipo==='no'||tipo==='revisar')tipo='inmueble'; // default si marcó SÍ
+    }
+    // Si NO PASÓ → no genera aviso aunque sea vulnerable
+    if(noPaso)tipo='no_paso';
 
-    // Col H: Estado — si dice "No vulnerable" forzar tipo no
-    const estado=(c[7]||'').toString().toLowerCase();
-    if(estado.includes('no vulnerable'))tipo='no';
-    if(estado.includes('siempre aviso'))tipo='siempre';
+    // Col M: Observaciones del auditor (índice 12)
+    const obs=[(c[12]||'').toString().trim(), noPaso?'NO PASÓ — escritura no formalizada':''].filter(Boolean).join(' | ');
 
     const ee={
       id:'e'+Date.now()+'_'+Math.random().toString(36).substr(2,4),
-      num:numEsc,
-      libro:'',
-      fecha,
-      naturaleza:natMapeada,
-      monto:0, // El monto se captura manualmente desde el expediente físico
-      obs:(c[7]||'').toString().trim(),
+      num:numEsc,libro:(c[5]||'').toString().trim()||'',
+      fecha,naturaleza:natMapeada,monto,obs,
       pA:{label:'Otorgante(s)',personas:personas.length?personas:[{id:'i0',nombre:otorgantesTexto,rfc:'',tipo:'pf',pct:'100'}]},
       pB:{label:'Contraparte',personas:[]},
-      tipo,
-      ts:Date.now()
+      tipo,noPaso,ts:Date.now()
     };
 
-    if(!yd.escrituras.find(x=>x.num===ee.num)){yd.escrituras.push(ee);cnt++;}
+    if(!yd.escrituras.find(x=>x.num===ee.num)){
+      yd.escrituras.push(ee);
+      escsProcesadas.push(ee);
+      cnt++;
+    }
   });
 
-  saveDB();renderEscs();
-  alert(`✅ ${cnt} escrituras importadas.\n\nNota: Los montos quedan en $0 — cáptralos desde el expediente físico en cada escritura.`);
+  // Vincular expedientes únicos
+  escsProcesadas.forEach(e=>updExps(e));
+  saveDB();renderEscs();renderExps();
+
+  const noPasoCount=escsProcesadas.filter(e=>e.noPaso).length;
+  alert(`✅ ${cnt} escrituras importadas.\n📋 ${noPasoCount} marcadas como "NO PASÓ" (no generan aviso).\n\n${escsProcesadas.filter(e=>!e.monto&&['inmueble','pm'].includes(e.tipo)).length} escrituras vulnerables sin monto — usa el botón 💲 Montos para capturarlos.`);
   document.getElementById('excel-file').value='';
 }
 
