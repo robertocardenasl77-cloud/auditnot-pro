@@ -26,14 +26,21 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db  = getFirestore(app);
 
+// Bandera para evitar que onSnapshot sobreescriba mientras guardamos
+let _saving = false;
+
 // ── Guardar en Firestore ──────────────────────────────────────
 async function saveDB(){
+  _saving = true;
   try{
     await setDoc(doc(db,'auditnot','main'), window.DB);
     window._syncStatus('✅ Sincronizado');
   }catch(e){
     window._syncStatus('❌ Error al guardar: '+e.message);
     console.error(e);
+  } finally {
+    // Esperar un momento antes de reactivar el listener
+    setTimeout(()=>{ _saving = false; }, 2000);
   }
 }
 
@@ -55,7 +62,9 @@ async function loadDB(){
     window._onDBReady();
 
     // Escuchar cambios en tiempo real (otros usuarios)
+    // Solo actualiza si NO estamos en medio de un guardado
     onSnapshot(doc(db,'auditnot','main'), snap=>{
+      if(_saving) return; // Ignorar snapshots mientras guardamos
       if(snap.exists()){
         window.DB = snap.data();
         if(!window.DB.notarias)  window.DB.notarias={};
@@ -67,7 +76,6 @@ async function loadDB(){
     });
   }catch(e){
     window._syncStatus('❌ Sin conexión — '+e.message);
-    // Fallback a localStorage
     try{const d=localStorage.getItem('anpro_backup');if(d)window.DB=JSON.parse(d);}catch(_){}
     if(!window.DB)window.DB={notarias:{},expedientes:{},avisos:{}};
     window._onDBReady();
@@ -77,6 +85,7 @@ async function loadDB(){
 // Exponer funciones al scope global
 window._saveDB = saveDB;
 window._loadDB = loadDB;
+window._setSaving = (val) => { _saving = val; };
 </script>
 
 <style>
@@ -603,6 +612,8 @@ window._onDBReady=function(){
 function saveDB(){
   // Guardar backup local siempre
   try{localStorage.setItem('anpro_backup',JSON.stringify(window.DB));}catch(_){}
+  // Activar bandera inmediatamente para bloquear onSnapshot
+  if(window._setSaving) window._setSaving(true);
   // Debounce para no saturar Firestore
   clearTimeout(_saveTimer);
   _saveTimer=setTimeout(()=>{
