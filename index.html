@@ -1,0 +1,1218 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AuditNot Pro</title>
+<style>
+:root{
+  --azul:#1a4a7a;--azul2:#2563a8;--azul3:#dbeafe;
+  --verde:#16a34a;--verde2:#dcfce7;
+  --rojo:#dc2626;--rojo2:#fee2e2;
+  --naranja:#ea580c;--naranja2:#ffedd5;
+  --amarillo:#ca8a04;--amarillo2:#fef9c3;
+  --gris:#6b7280;
+  --bg:#f1f5f9;--card:#fff;--borde:#e2e8f0;
+}
+*{box-sizing:border-box;margin:0;padding:0;font-family:'Segoe UI',system-ui,sans-serif}
+body{background:var(--bg);color:#1e293b;min-height:100vh;font-size:14px}
+.hdr{background:linear-gradient(135deg,#0f2d52,var(--azul2));color:#fff;padding:12px 20px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:200;box-shadow:0 2px 10px rgba(0,0,0,.3)}
+.hdr-logo{font-size:20px;font-weight:800;letter-spacing:-.5px}.hdr-logo span{color:#93c5fd}
+.hdr-sub{font-size:10px;opacity:.7}
+.hdr-not{margin-left:auto;text-align:right;font-size:11px;opacity:.85;cursor:pointer}
+.hdr-not b{font-size:13px;display:block}
+.nav{background:#fff;border-bottom:2px solid var(--borde);display:flex;overflow-x:auto;position:sticky;top:53px;z-index:199}
+.nav-btn{padding:11px 16px;font-size:12px;font-weight:600;color:var(--gris);border:none;background:none;cursor:pointer;white-space:nowrap;border-bottom:3px solid transparent;transition:all .15s}
+.nav-btn:hover{color:var(--azul);background:var(--bg)}
+.nav-btn.active{color:var(--azul);border-bottom-color:var(--azul)}
+.main{padding:16px;max-width:1400px;margin:0 auto}
+.page{display:none}.page.active{display:block}
+.two-col{display:grid;grid-template-columns:400px 1fr;gap:16px;align-items:start}
+.three-col{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+@media(max-width:900px){.two-col,.three-col{grid-template-columns:1fr}}
+.card{background:var(--card);border-radius:10px;border:1px solid var(--borde);padding:16px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,.07)}
+.card-title{font-size:14px;font-weight:700;color:var(--azul);margin-bottom:12px;display:flex;align-items:center;gap:8px;padding-bottom:8px;border-bottom:1px solid var(--borde)}
+.fg{margin-bottom:10px}
+.fg label{font-size:11px;font-weight:700;color:#475569;margin-bottom:3px;display:block;text-transform:uppercase;letter-spacing:.3px}
+input,select,textarea{width:100%;padding:7px 10px;border:1.5px solid var(--borde);border-radius:6px;font-size:13px;transition:border .15s;background:#fff;color:#1e293b}
+input:focus,select:focus{outline:none;border-color:var(--azul2);box-shadow:0 0 0 3px rgba(37,99,168,.1)}
+textarea{min-height:52px;resize:vertical}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.row4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px}
+.btn{padding:7px 14px;border-radius:6px;border:none;cursor:pointer;font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:5px;transition:all .15s}
+.btn-sm{padding:4px 10px;font-size:11px}.btn-xs{padding:3px 8px;font-size:11px}
+.btn-primary{background:var(--azul2);color:#fff}.btn-primary:hover{background:var(--azul)}
+.btn-success{background:var(--verde);color:#fff}
+.btn-danger{background:var(--rojo);color:#fff}
+.btn-outline{background:#fff;color:var(--azul2);border:1.5px solid var(--azul2)}.btn-outline:hover{background:var(--azul3)}
+.btn-ghost{background:transparent;color:var(--gris);border:1px solid var(--borde)}.btn-ghost:hover{background:var(--bg)}
+.chip{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700}
+.chip-rojo{background:var(--rojo2);color:var(--rojo)}
+.chip-naranja{background:var(--naranja2);color:var(--naranja)}
+.chip-amarillo{background:var(--amarillo2);color:var(--amarillo)}
+.chip-verde{background:var(--verde2);color:var(--verde)}
+.chip-azul{background:var(--azul3);color:var(--azul2)}
+.chip-gris{background:#f3f4f6;color:var(--gris)}
+.tbl-wrap{overflow-x:auto;border-radius:8px;border:1px solid var(--borde)}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{background:#f8fafc;padding:8px 10px;text-align:left;font-weight:700;color:#374151;border-bottom:2px solid var(--borde);white-space:nowrap}
+td{padding:7px 10px;border-bottom:1px solid var(--borde);vertical-align:middle}
+tr:hover td{background:#f8fafc}
+tr:last-child td{border-bottom:none}
+.alert{padding:10px 14px;border-radius:8px;font-size:12px;margin-bottom:10px;display:flex;align-items:flex-start;gap:8px}
+.alert-info{background:var(--azul3);color:var(--azul);border:1px solid #bfdbfe}
+.alert-warn{background:var(--amarillo2);color:#713f12;border:1px solid #fde68a}
+.alert-error{background:var(--rojo2);color:#7f1d1d;border:1px solid #fca5a5}
+.alert-success{background:var(--verde2);color:#14532d;border:1px solid #86efac}
+.monto-ok{border-color:var(--verde)!important;background:#f0fdf4!important}
+.monto-warn{border-color:var(--amarillo)!important;background:#fef9c3!important}
+.monto-danger{border-color:var(--rojo)!important;background:#fff1f2!important}
+.monto-hint{font-size:11px;margin-top:3px;font-weight:600}
+.monto-hint.ok{color:var(--verde)}.monto-hint.warn{color:var(--amarillo)}.monto-hint.danger{color:var(--rojo)}
+.parte-bloque{background:#f8fafc;border:1px solid var(--borde);border-radius:8px;padding:12px;margin-bottom:8px}
+.parte-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.parte-header h4{font-size:12px;font-weight:700;color:var(--azul2)}
+.persona-item{background:#fff;border:1px solid var(--borde);border-radius:6px;padding:10px;margin-bottom:6px;position:relative}
+.persona-item .rm-p{position:absolute;top:6px;right:6px;background:none;border:none;color:var(--rojo);cursor:pointer;font-size:15px}
+.exp-card{background:#fff;border:1.5px solid var(--borde);border-radius:10px;padding:14px;margin-bottom:10px}
+.exp-card.incompleto{border-color:var(--naranja)}
+.exp-card.completo{border-color:var(--verde)}
+.pct-bar{height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden;margin:6px 0}
+.pct-fill{height:100%;border-radius:3px;transition:width .3s}
+.doc-item{display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-bottom:1px solid var(--borde)}
+.doc-item:last-child{border-bottom:none}
+.doc-semaforo{width:9px;height:9px;border-radius:50%;flex-shrink:0;margin-top:3px}
+.doc-semaforo.verde{background:var(--verde)}.doc-semaforo.rojo{background:var(--rojo)}.doc-semaforo.naranja{background:var(--naranja)}
+.inicio-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;margin-top:16px}
+.not-card{background:var(--card);border:2px solid var(--borde);border-radius:12px;padding:18px;cursor:pointer;transition:all .2s;text-align:center}
+.not-card:hover,.not-card.selected{border-color:var(--azul2);background:var(--azul3)}
+.not-card h3{font-size:15px;font-weight:700;color:var(--azul);margin-bottom:4px}
+.not-card p{font-size:12px;color:var(--gris)}
+.section-title{font-size:18px;font-weight:800;color:var(--azul);margin-bottom:4px}
+.section-sub{font-size:12px;color:var(--gris);margin-bottom:16px}
+.divider{border:none;border-top:1px solid var(--borde);margin:12px 0}
+.text-sm{font-size:11px;color:var(--gris)}
+.flex{display:flex;align-items:center;gap:8px}
+.flex-between{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.sticky-panel{position:sticky;top:110px}
+.empty-state{text-align:center;padding:40px 20px;color:var(--gris)}
+.empty-state .icon{font-size:36px;margin-bottom:8px}
+.uma-actual{background:var(--azul3)!important;font-weight:700}
+.acum-bar{height:8px;background:#e2e8f0;border-radius:4px;overflow:hidden;margin-top:4px}
+.acum-fill{height:100%;border-radius:4px}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:500;align-items:center;justify-content:center}
+.modal-overlay.open{display:flex}
+.modal{background:#fff;border-radius:14px;padding:22px;max-width:760px;width:95%;max-height:90vh;overflow-y:auto;position:relative}
+.modal-title{font-size:15px;font-weight:700;color:var(--azul);margin-bottom:14px}
+.modal-close{position:absolute;top:14px;right:14px;background:none;border:none;font-size:20px;cursor:pointer;color:var(--gris)}
+.tabs{display:flex;gap:0;border-bottom:2px solid var(--borde);margin-bottom:14px}
+.tab-btn{padding:8px 16px;font-size:12px;font-weight:600;color:var(--gris);border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px}
+.tab-btn.active{color:var(--azul2);border-bottom-color:var(--azul2)}
+.tab-pane{display:none}.tab-pane.active{display:block}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <div>
+    <div class="hdr-logo">Audit<span>Not</span> Pro</div>
+    <div class="hdr-sub">Sistema de Auditoría Antilavado — LFPIORPI</div>
+  </div>
+  <div class="hdr-not" onclick="showPage('inicio')">
+    <b id="hdr-not-name">← Selecciona una notaría</b>
+    <span id="hdr-not-year"></span>
+  </div>
+</div>
+
+<div class="nav" id="main-nav" style="display:none">
+  <button class="nav-btn active" onclick="showPage('escrituras')">📋 Escrituras</button>
+  <button class="nav-btn" onclick="showPage('expedientes')">🗂️ Expedientes Únicos</button>
+  <button class="nav-btn" onclick="showPage('acumulados')">📊 Acumulados</button>
+  <button class="nav-btn" onclick="showPage('comparador')">🔍 Comparador SAT</button>
+  <button class="nav-btn" onclick="showPage('comparativo')">📈 Comparativo Años</button>
+  <button class="nav-btn" onclick="showPage('uma')">📐 Tabla UMA</button>
+  <button class="nav-btn" onclick="showPage('inicio')">🏠 Notarías</button>
+</div>
+
+<div class="main">
+
+<!-- INICIO -->
+<div class="page active" id="page-inicio">
+  <div class="section-title">🏛️ AuditNot Pro</div>
+  <div class="section-sub">Selecciona una notaría o agrega una nueva.</div>
+  <div class="inicio-grid" id="not-grid"></div>
+  <div style="margin-top:20px">
+    <div class="card" style="max-width:400px">
+      <div class="card-title">➕ Nueva Notaría</div>
+      <div class="fg"><label>Nombre / Número</label><input id="new-not-name" placeholder="Notaría 8 de Coahuila"></div>
+      <div class="fg"><label>Notario Titular</label><input id="new-not-titular" placeholder="Lic. Juan Pérez López"></div>
+      <div class="fg"><label>Estado</label><input id="new-not-estado" placeholder="Coahuila de Zaragoza"></div>
+      <button class="btn btn-primary" onclick="addNotaria()">➕ Agregar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ESCRITURAS -->
+<div class="page" id="page-escrituras">
+  <div class="two-col">
+    <div class="sticky-panel">
+
+      <div class="card">
+        <div class="card-title">✍️ Capturar Escritura
+          <select id="year-select" style="margin-left:auto;width:90px;font-size:12px" onchange="changeYear()"></select>
+          <button class="btn btn-ghost btn-sm" onclick="addYear()">+Año</button>
+        </div>
+
+        <div class="row3">
+          <div class="fg"><label>N° Escritura</label><input id="f-num" type="number" placeholder="001"></div>
+          <div class="fg"><label>Libro</label><input id="f-libro" placeholder="I"></div>
+          <div class="fg"><label>Fecha</label><input id="f-fecha" type="date"></div>
+        </div>
+
+        <div class="fg">
+          <label>Naturaleza del Acto</label>
+          <select id="f-naturaleza" onchange="onNatChange()">
+            <option value="">— Selecciona —</option>
+            <optgroup label="Inmuebles (Inc. a) — con umbral">
+              <option value="compraventa">Compraventa</option>
+              <option value="donacion">Donación</option>
+              <option value="dacion">Dación en pago</option>
+              <option value="permuta">Permuta</option>
+              <option value="aportacion_inmueble">Aportación a sociedad (inmueble)</option>
+              <option value="cesion_derechos">Cesión de derechos reales</option>
+              <option value="fusion_traslado">Fusión de predios CON traslado de dominio</option>
+              <option value="subdivision_traslado">Subdivisión CON traslado de dominio</option>
+            </optgroup>
+            <optgroup label="Poderes (Inc. b)">
+              <option value="poder_irrevocable_dominio">Poder irrevocable para actos de dominio/adm. ⚠️ SIEMPRE AVISO</option>
+              <option value="poder_revocable">Poder general revocable (NO vulnerable)</option>
+              <option value="poder_especial">Poder especial / notarial simple (NO vulnerable)</option>
+            </optgroup>
+            <optgroup label="Personas Morales (Inc. c) — con umbral">
+              <option value="constitucion_pm">Constitución de PM</option>
+              <option value="transmision_acciones">Transmisión de acciones / partes sociales</option>
+              <option value="aumento_capital">Aumento de capital con aportación</option>
+            </optgroup>
+            <optgroup label="Fideicomisos (Inc. d) — umbral PM">
+              <option value="fideicomiso">Constitución / cesión fideicomiso</option>
+            </optgroup>
+            <optgroup label="Mutuo / Crédito (Inc. e) — SIEMPRE AVISO">
+              <option value="mutuo_no_financiero">Mutuo o crédito con acreedor NO financiero</option>
+            </optgroup>
+            <optgroup label="Revisar manualmente">
+              <option value="adjudicacion_hereditaria">Adjudicación hereditaria</option>
+              <option value="adjudicacion_remate">Adjudicación por remate judicial</option>
+              <option value="acta_asamblea">Acta de asamblea</option>
+              <option value="fusion_sin_traslado">Fusión de predios SIN traslado (revisar instrumento)</option>
+              <option value="subdivision_sin_traslado">Subdivisión SIN traslado (revisar instrumento)</option>
+            </optgroup>
+            <optgroup label="No vulnerables">
+              <option value="testamento">Testamento</option>
+              <option value="declaracion_herederos">Declaración de herederos</option>
+              <option value="cancelacion_hipoteca">Cancelación de hipoteca</option>
+              <option value="ratificacion_firmas">Ratificación de firmas</option>
+              <option value="revocacion_poder">Revocación de poder</option>
+              <option value="protocolizacion">Protocolización simple</option>
+              <option value="otro_no_vulnerable">Otro no vulnerable</option>
+            </optgroup>
+          </select>
+        </div>
+
+        <div id="nat-alerta" style="display:none"></div>
+
+        <div id="bloque-monto" style="display:none">
+          <div class="fg">
+            <label>Monto de la Operación ($)</label>
+            <input id="f-monto" type="number" placeholder="0.00" oninput="calcSemaforo()">
+            <div id="monto-hint" class="monto-hint"></div>
+          </div>
+          <div id="umbral-info" class="text-sm" style="margin-bottom:8px"></div>
+        </div>
+
+        <hr class="divider">
+        <div style="font-size:12px;font-weight:700;color:var(--azul);margin-bottom:10px">👥 Partes Intervinientes</div>
+
+        <div class="parte-bloque">
+          <div class="parte-header">
+            <div>
+              <h4>PARTE A</h4>
+              <input id="label-a" value="Adquirente / Comprador" style="font-size:11px;width:195px;padding:3px 6px;margin-top:3px">
+            </div>
+            <button class="btn btn-outline btn-xs" onclick="addP('a')">+ Persona</button>
+          </div>
+          <div id="personas-a"></div>
+        </div>
+
+        <div class="parte-bloque">
+          <div class="parte-header">
+            <div>
+              <h4>PARTE B</h4>
+              <input id="label-b" value="Enajenante / Vendedor" style="font-size:11px;width:195px;padding:3px 6px;margin-top:3px">
+            </div>
+            <button class="btn btn-outline btn-xs" onclick="addP('b')">+ Persona</button>
+          </div>
+          <div id="personas-b"></div>
+        </div>
+
+        <div class="alert alert-info" style="font-size:11px">
+          💡 Si la Parte A tiene múltiples personas, indica el % de participación de cada una (deben sumar 100%). Los acumulados Art. 17 se calcularán proporcionalmente.
+        </div>
+
+        <hr class="divider">
+        <div class="fg"><label>Observaciones</label><textarea id="f-obs" rows="2" placeholder="Notas internas..."></textarea></div>
+
+        <div class="flex" style="margin-top:6px">
+          <button class="btn btn-primary" onclick="guardarEsc()">💾 Guardar</button>
+          <button class="btn btn-ghost" onclick="limpiar()">🗑️ Limpiar</button>
+          <span id="form-msg" style="font-size:11px;color:var(--verde)"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📥 Importar Excel (Índice Claude)</div>
+        <input type="file" id="excel-file" accept=".xlsx,.xls,.csv" onchange="importExcel(this)">
+        <div class="text-sm" style="margin-top:5px">CSV generado por Claude con el índice clasificado.</div>
+      </div>
+
+    </div>
+
+    <!-- Lista escrituras -->
+    <div>
+      <div class="card">
+        <div class="flex-between" style="margin-bottom:10px">
+          <div>
+            <div class="section-title" style="font-size:15px" id="lista-titulo">Escrituras</div>
+            <div id="lista-stats" class="text-sm"></div>
+          </div>
+          <div class="flex">
+            <input id="buscar-esc" placeholder="🔍 Buscar..." style="width:170px;font-size:12px" oninput="renderEscs()">
+            <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇️ CSV</button>
+            <button class="btn btn-ghost btn-sm" onclick="backup()">💾 Backup</button>
+          </div>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>N°</th><th>Fecha</th><th>Naturaleza</th>
+                <th>Parte A</th><th>Parte B</th>
+                <th>Monto</th><th>Estado</th><th>Exp.</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="tbody-escs"></tbody>
+          </table>
+        </div>
+        <div id="escs-empty" class="empty-state" style="display:none">
+          <div class="icon">📋</div>No hay escrituras para este año.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- EXPEDIENTES -->
+<div class="page" id="page-expedientes">
+  <div class="flex-between" style="margin-bottom:14px">
+    <div>
+      <div class="section-title">🗂️ Expedientes Únicos</div>
+      <div class="section-sub">Art. 18 LFPIORPI — Identificación completa (Anexos 3 y 4 RCG)</div>
+    </div>
+    <input id="buscar-exp" placeholder="🔍 Nombre o RFC..." style="width:220px" oninput="renderExps()">
+  </div>
+  <div id="exp-grid"></div>
+  <div id="exp-empty" class="empty-state" style="display:none">
+    <div class="icon">🗂️</div>Los expedientes se generan automáticamente al guardar escrituras con intervinientes identificados.
+  </div>
+</div>
+
+<!-- ACUMULADOS -->
+<div class="page" id="page-acumulados">
+  <div class="section-title">📊 Acumulados por Cliente</div>
+  <div class="section-sub">Art. 17 penúltimo párrafo — Prorrateado por % de participación</div>
+  <div class="alert alert-info">💡 Solo se acumulan los intervinientes de la <b>Parte A</b> (adquirentes/donatarios). El monto se asigna según % de participación registrado.</div>
+  <div id="acum-grid" style="margin-top:14px"></div>
+</div>
+
+<!-- COMPARADOR SAT -->
+<div class="page" id="page-comparador">
+  <div class="section-title">🔍 Comparador de Avisos SAT</div>
+  <div class="section-sub">Registro de folios SPPLD y estado de presentación</div>
+  <div class="two-col">
+    <div class="card">
+      <div class="card-title">Registrar Aviso</div>
+      <div class="fg"><label>N° Escritura</label><input id="sat-num" type="number"></div>
+      <div class="fg"><label>Folio SAT (SPPLD)</label><input id="sat-folio" placeholder="Folio asignado"></div>
+      <div class="fg"><label>Fecha de Presentación</label><input id="sat-fecha" type="date"></div>
+      <div class="fg"><label>Estado</label>
+        <select id="sat-estado">
+          <option value="presentado">Presentado ✅</option>
+          <option value="pendiente">Pendiente ⏳</option>
+          <option value="no_aplica">No aplica ⬜</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" onclick="guardarAviso()">💾 Guardar</button>
+    </div>
+    <div class="card">
+      <div class="card-title">Estado de Avisos — Operaciones Vulnerables</div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Esc.</th><th>Naturaleza</th><th>Monto</th><th>Folio SAT</th><th>Fecha</th><th>Estado</th></tr></thead>
+          <tbody id="tbody-avisos"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- COMPARATIVO -->
+<div class="page" id="page-comparativo">
+  <div class="section-title">📈 Comparativo Entre Años</div>
+  <div class="section-sub">Tendencia de operaciones por ejercicio fiscal</div>
+  <div id="comp-grid"></div>
+</div>
+
+<!-- UMA -->
+<div class="page" id="page-uma">
+  <div class="section-title">📐 Umbrales Históricos LFPIORPI</div>
+  <div class="section-sub">Art. 17 Fracc. XII — Fedatarios Públicos (Notarios)</div>
+  <div class="card">
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Período</th><th>UMA Diaria</th>
+            <th>Umbral Inmuebles</th>
+            <th>Umbral PM / Fideicomisos</th>
+          </tr>
+        </thead>
+        <tbody id="tbody-uma"></tbody>
+      </table>
+    </div>
+    <div class="alert alert-warn" style="margin-top:12px">
+      ⚠️ <b>Regla enero:</b> Escrituras de enero usan la UMA del ciclo anterior (vigente hasta el 31 de enero). La nueva UMA entra en vigor el 1° de febrero.<br>
+      ⚠️ <b>Reforma 17/07/2025:</b> Los umbrales se redujeron a la mitad: 8,000 UMA para inmuebles y 4,000 UMA para PM/Fideicomisos.
+    </div>
+  </div>
+</div>
+
+</div><!-- /main -->
+
+<!-- MODAL EXPEDIENTE -->
+<div class="modal-overlay" id="modal-exp">
+  <div class="modal" style="max-width:820px">
+    <button class="modal-close" onclick="closeM('modal-exp')">✕</button>
+    <div class="modal-title" id="modal-exp-title">Expediente Único</div>
+    <div id="modal-exp-body"></div>
+  </div>
+</div>
+
+<script>
+// ═══ CONSTANTES ═══
+const UMA_DATA=[
+  {d:'2020-02-01',h:'2021-01-31',u:86.88},
+  {d:'2021-02-01',h:'2022-01-31',u:89.62},
+  {d:'2022-02-01',h:'2023-01-31',u:96.22},
+  {d:'2023-02-01',h:'2024-01-31',u:103.74},
+  {d:'2024-02-01',h:'2025-01-31',u:108.57},
+  {d:'2025-02-01',h:'2099-12-31',u:113.14},
+];
+const REFORMA_JUL25=new Date('2025-07-17');
+
+function getUmbral(fechaStr,tipo){
+  if(!fechaStr)return null;
+  const f=new Date(fechaStr+'T12:00:00');
+  const ref=f.getMonth()===0?new Date((f.getFullYear()-1)+'-06-01'):f;
+  let uma=86.88;
+  for(const r of UMA_DATA){if(ref>=new Date(r.d)&&ref<=new Date(r.h)){uma=r.u;break;}}
+  const mI=f>=REFORMA_JUL25?8000:16000;
+  const mPM=f>=REFORMA_JUL25?4000:8025;
+  const mult=tipo==='pm'?mPM:mI;
+  return{umbral:mult*uma,uma,mult};
+}
+
+const NAT_TIPO={
+  compraventa:'inmueble',donacion:'inmueble',dacion:'inmueble',permuta:'inmueble',
+  aportacion_inmueble:'inmueble',cesion_derechos:'inmueble',
+  fusion_traslado:'inmueble',subdivision_traslado:'inmueble',
+  poder_irrevocable_dominio:'siempre',
+  poder_revocable:'no',poder_especial:'no',
+  constitucion_pm:'pm',transmision_acciones:'pm',aumento_capital:'pm',
+  fideicomiso:'pm',
+  mutuo_no_financiero:'siempre',
+  adjudicacion_hereditaria:'revisar',adjudicacion_remate:'revisar',acta_asamblea:'revisar',
+  fusion_sin_traslado:'revisar',subdivision_sin_traslado:'revisar',
+  testamento:'no',declaracion_herederos:'no',cancelacion_hipoteca:'no',
+  ratificacion_firmas:'no',revocacion_poder:'no',protocolizacion:'no',otro_no_vulnerable:'no'
+};
+const NAT_LABEL={
+  compraventa:'Compraventa',donacion:'Donación',dacion:'Dación en pago',permuta:'Permuta',
+  aportacion_inmueble:'Aportación inmueble a sociedad',cesion_derechos:'Cesión derechos reales',
+  fusion_traslado:'Fusión predios (con traslado)',subdivision_traslado:'Subdivisión (con traslado)',
+  poder_irrevocable_dominio:'Poder irrevocable adm/dominio',
+  poder_revocable:'Poder general revocable',poder_especial:'Poder especial',
+  constitucion_pm:'Constitución de PM',transmision_acciones:'Transmisión acciones/partes',
+  aumento_capital:'Aumento de capital',fideicomiso:'Fideicomiso',
+  mutuo_no_financiero:'Mutuo/crédito no financiero',
+  adjudicacion_hereditaria:'Adjudicación hereditaria',adjudicacion_remate:'Adj. por remate',
+  acta_asamblea:'Acta de asamblea',
+  fusion_sin_traslado:'Fusión predios (sin traslado)',subdivision_sin_traslado:'Subdivisión (sin traslado)',
+  testamento:'Testamento',declaracion_herederos:'Decl. herederos',cancelacion_hipoteca:'Cancelación hipoteca',
+  ratificacion_firmas:'Ratificación firmas',revocacion_poder:'Revocación poder',
+  protocolizacion:'Protocolización',otro_no_vulnerable:'Otro no vulnerable'
+};
+
+// ═══ ESTADO ═══
+let DB={notarias:{},expedientes:{},avisos:{}};
+let curNot=null,curYear=new Date().getFullYear();
+let pA=[],pB=[];
+
+function loadDB(){try{const d=localStorage.getItem('anpro2025');if(d)DB=JSON.parse(d);}catch(e){}
+  if(!DB.notarias)DB.notarias={};if(!DB.expedientes)DB.expedientes={};if(!DB.avisos)DB.avisos={};}
+function saveDB(){localStorage.setItem('anpro2025',JSON.stringify(DB));}
+
+// ═══ NOTARÍAS ═══
+function renderNotGrid(){
+  const g=document.getElementById('not-grid');g.innerHTML='';
+  for(const id in DB.notarias){
+    const n=DB.notarias[id];
+    const cnt=Object.values(n.years||{}).reduce((s,y)=>s+(y.escrituras||[]).length,0);
+    const d=document.createElement('div');d.className='not-card'+(curNot===id?' selected':'');
+    d.innerHTML=`<h3>${n.nombre}</h3><p>${n.titular||''}</p><p style="margin-top:4px;font-size:11px">${n.estado||''}</p><p style="margin-top:8px"><b>${cnt}</b> escrituras</p>`;
+    d.onclick=()=>selNot(id);g.appendChild(d);
+  }
+}
+function addNotaria(){
+  const nom=document.getElementById('new-not-name').value.trim();
+  if(!nom)return alert('Ingresa el nombre');
+  const id='n'+Date.now();
+  DB.notarias[id]={nombre:nom,titular:document.getElementById('new-not-titular').value.trim(),
+    estado:document.getElementById('new-not-estado').value.trim(),years:{}};
+  saveDB();renderNotGrid();
+  ['new-not-name','new-not-titular','new-not-estado'].forEach(i=>document.getElementById(i).value='');
+}
+function selNot(id){
+  curNot=id;const n=DB.notarias[id];
+  document.getElementById('hdr-not-name').textContent=n.nombre;
+  document.getElementById('main-nav').style.display='flex';
+  const yrs=Object.keys(n.years||{}).map(Number).sort((a,b)=>b-a);
+  curYear=yrs[0]||new Date().getFullYear();
+  renderYearSel();showPage('escrituras');
+}
+
+// ═══ AÑOS ═══
+function getNot(){return DB.notarias[curNot]||null;}
+function getYD(){const n=getNot();if(!n)return null;if(!n.years[curYear])n.years[curYear]={escrituras:[]};return n.years[curYear];}
+function getEscs(){return(getYD()||{escrituras:[]}).escrituras;}
+function renderYearSel(){
+  const n=getNot();if(!n)return;
+  const s=document.getElementById('year-select');
+  const yrs=Object.keys(n.years||{}).map(Number).sort((a,b)=>b-a);
+  if(!yrs.includes(curYear)){if(!n.years[curYear])n.years[curYear]={escrituras:[]};yrs.push(curYear);yrs.sort((a,b)=>b-a);}
+  s.innerHTML=yrs.map(y=>`<option value="${y}"${y===curYear?' selected':''}>${y}</option>`).join('');
+}
+function changeYear(){curYear=parseInt(document.getElementById('year-select').value);renderEscs();}
+function addYear(){const y=parseInt(prompt('Año:'));if(!y||isNaN(y))return;const n=getNot();if(!n)return;if(!n.years[y])n.years[y]={escrituras:[]};curYear=y;saveDB();renderYearSel();changeYear();}
+
+// ═══ PERSONAS ═══
+function addP(p){const id='p'+Date.now();(p==='a'?pA:pB).push({id,nombre:'',rfc:'',tipo:'pf',pct:''});renderPs();}
+function rmP(p,id){if(p==='a')pA=pA.filter(x=>x.id!==id);else pB=pB.filter(x=>x.id!==id);renderPs();}
+function updP(p,id,k,v){(p==='a'?pA:pB).find(x=>x.id===id)[k]=v;if(p==='a')chkPct();}
+
+function renderPs(){
+  renderParte('a',pA);renderParte('b',pB);chkPct();
+}
+
+function renderParte(p,arr){
+  const c=document.getElementById('personas-'+p);
+  if(!arr.length){c.innerHTML=`<div class="text-sm" style="padding:6px 0;color:var(--gris)">Sin personas registradas. Usa "+ Persona".</div>`;return;}
+  c.innerHTML=arr.map(x=>`
+    <div class="persona-item">
+      <button class="rm-p" onclick="rmP('${p}','${x.id}')">✕</button>
+      <div class="row3" style="margin-bottom:6px">
+        <div class="fg" style="margin:0"><label>Nombre completo</label>
+          <input value="${esc(x.nombre)}" oninput="updP('${p}','${x.id}','nombre',this.value)" placeholder="Nombre y apellidos"></div>
+        <div class="fg" style="margin:0"><label>RFC</label>
+          <input value="${esc(x.rfc)}" oninput="updP('${p}','${x.id}','rfc',this.value)" placeholder="RFC"></div>
+        <div class="fg" style="margin:0"><label>Tipo</label>
+          <select onchange="updP('${p}','${x.id}','tipo',this.value)">
+            <option value="pf"${x.tipo==='pf'?' selected':''}>Persona Física</option>
+            <option value="pm"${x.tipo==='pm'?' selected':''}>Persona Moral</option>
+          </select></div>
+      </div>
+      ${p==='a'?`<div class="fg" style="margin:0;max-width:200px"><label>% Participación (Parte A)</label>
+        <input type="number" min="0" max="100" value="${esc(x.pct)}" style="width:120px"
+          oninput="updP('a','${x.id}','pct',this.value)" placeholder="Ej: 50"></div>`:''}
+    </div>`).join('');
+}
+
+function chkPct(){
+  if(pA.length<=1)return;
+  const sum=pA.reduce((s,p)=>s+parseFloat(p.pct||0),0);
+  const c=document.getElementById('personas-a');
+  let h=c.querySelector('.pct-hint');
+  if(!h){h=document.createElement('div');h.className='pct-hint text-sm';c.appendChild(h);}
+  const ok=Math.abs(sum-100)<0.5;
+  h.innerHTML=`<span style="color:${ok?'var(--verde)':sum>100?'var(--rojo)':'var(--naranja)'}">${ok?'✅':'⚠️'} Suma Parte A: <b>${sum.toFixed(1)}%</b>${ok?'':' — debe sumar 100%'}</span>`;
+}
+
+// ═══ NATURALEZA ═══
+function onNatChange(){
+  const nat=document.getElementById('f-naturaleza').value;
+  const tipo=NAT_TIPO[nat]||'no';
+  const alerta=document.getElementById('nat-alerta');
+  const bMonto=document.getElementById('bloque-monto');
+  const lA=document.getElementById('label-a');
+  const lB=document.getElementById('label-b');
+
+  if(!nat){bMonto.style.display='none';alerta.style.display='none';return;}
+
+  // Etiquetas
+  if(['compraventa','dacion','cesion_derechos'].includes(nat)){lA.value='Adquirente / Comprador';lB.value='Enajenante / Vendedor';}
+  else if(nat==='donacion'){lA.value='Donatario';lB.value='Donante';}
+  else if(nat==='permuta'){lA.value='Permutante A';lB.value='Permutante B';}
+  else if(nat.startsWith('poder')){lA.value='Apoderado';lB.value='Poderdante';}
+  else if(nat==='constitucion_pm'){lA.value='Socios fundadores';lB.value='Rep. legal designado';}
+  else if(nat==='transmision_acciones'){lA.value='Adquirente acciones';lB.value='Cedente / Vendedor';}
+  else if(nat==='fideicomiso'){lA.value='Fideicomisario';lB.value='Fideicomitente';}
+  else if(nat==='mutuo_no_financiero'){lA.value='Deudor / Acreditado';lB.value='Acreedor no financiero';}
+  else if(nat.includes('adjudicacion')){lA.value='Adjudicatario(s)';lB.value='Causante';}
+  else{lA.value='Parte A';lB.value='Parte B';}
+
+  alerta.style.display='flex';
+  if(tipo==='inmueble'||tipo==='pm'){
+    alerta.style.display='none';
+    bMonto.style.display='block';
+    calcSemaforo();
+  } else if(tipo==='siempre'){
+    bMonto.style.display='none';
+    alerta.className='alert alert-warn';
+    if(nat==='poder_irrevocable_dominio'){
+      alerta.innerHTML='⚠️ <b>SIEMPRE AVISO</b> — Poder irrevocable con facultades de administración o dominio (Art. 17 Fracc. XII inc. b). No requiere umbral de monto.';
+    } else {
+      alerta.innerHTML='⚠️ <b>SIEMPRE AVISO</b> — Mutuo o crédito con acreedor no financiero (Art. 17 Fracc. XII inc. e). No se aplica umbral.';
+    }
+  } else if(tipo==='revisar'){
+    bMonto.style.display='none';
+    alerta.className='alert alert-warn';
+    if(nat==='fusion_sin_traslado'||nat==='subdivision_sin_traslado'){
+      alerta.innerHTML='⚠️ <b>Revisar instrumento</b> — Fusión o subdivisión de predios. <b>Solo es acto vulnerable si el instrumento contiene explícitamente compraventa, donación, enajenación o transmisión a favor de tercero</b>. Si no hay traslado de dominio: NO vulnerable.';
+    } else {
+      alerta.innerHTML='⚠️ <b>Revisar manualmente</b> — Este acto puede ser o no vulnerable. Revisa el expediente físico.';
+    }
+  } else {
+    bMonto.style.display='none';
+    alerta.className='alert alert-success';
+    alerta.innerHTML='✅ <b>No vulnerable</b> — Este acto no genera obligación de aviso conforme a la LFPIORPI.';
+  }
+}
+
+// ═══ SEMÁFORO MONTO ═══
+function calcSemaforo(){
+  const nat=document.getElementById('f-naturaleza').value;
+  const fecha=document.getElementById('f-fecha').value;
+  const monto=parseFloat(document.getElementById('f-monto').value)||0;
+  const tipo=NAT_TIPO[nat]==='pm'?'pm':'inmueble';
+  const inp=document.getElementById('f-monto');
+  const hint=document.getElementById('monto-hint');
+  const info=document.getElementById('umbral-info');
+  if(!fecha){return;}
+  const u=getUmbral(fecha,tipo);if(!u)return;
+  info.textContent=`Umbral: $${fmt(u.umbral)} (${u.mult.toLocaleString()} UMA × $${u.uma})`;
+  inp.className='';hint.textContent='';
+  if(!monto)return;
+  const pct=monto/u.umbral*100;
+  if(pct>=100){inp.className='monto-danger';hint.className='monto-hint danger';hint.textContent=`🔴 SUPERA el umbral — Aviso obligatorio (excede en $${fmt(monto-u.umbral)})`;}
+  else if(pct>=80){inp.className='monto-warn';hint.className='monto-hint warn';hint.textContent=`🟡 Cerca del umbral (${pct.toFixed(1)}%) — Revisa acumulados`;}
+  else{inp.className='monto-ok';hint.className='monto-hint ok';hint.textContent=`🟢 Dentro del umbral (${pct.toFixed(1)}%)`;}
+}
+
+// ═══ GUARDAR ESCRITURA ═══
+function guardarEsc(){
+  const num=document.getElementById('f-num').value.trim();
+  const fecha=document.getElementById('f-fecha').value;
+  const nat=document.getElementById('f-naturaleza').value;
+  if(!num||!fecha||!nat)return alert('Completa: N° escritura, fecha y naturaleza.');
+  if(pA.length>1){
+    const sum=pA.reduce((s,p)=>s+parseFloat(p.pct||0),0);
+    if(Math.abs(sum-100)>0.5&&!confirm(`Suma Parte A: ${sum.toFixed(1)}%. ¿Continuar?`))return;
+  }
+  const yd=getYD();if(!yd)return;
+  const e={
+    id:'e'+Date.now(),num:parseInt(num),libro:document.getElementById('f-libro').value.trim(),
+    fecha,naturaleza:nat,monto:parseFloat(document.getElementById('f-monto').value)||0,
+    obs:document.getElementById('f-obs').value.trim(),
+    pA:{label:document.getElementById('label-a').value,personas:JSON.parse(JSON.stringify(pA))},
+    pB:{label:document.getElementById('label-b').value,personas:JSON.parse(JSON.stringify(pB))},
+    tipo:NAT_TIPO[nat]||'no',ts:Date.now()
+  };
+  const idx=yd.escrituras.findIndex(x=>x.num===e.num);
+  if(idx>=0){if(!confirm(`Escritura N°${num} ya existe. ¿Reemplazar?`))return;yd.escrituras[idx]=e;}
+  else yd.escrituras.push(e);
+  updExps(e);saveDB();limpiar();renderEscs();renderExps();
+  document.getElementById('form-msg').textContent='✅ Guardada';
+  setTimeout(()=>document.getElementById('form-msg').textContent='',2500);
+}
+
+function limpiar(){
+  ['f-num','f-libro','f-monto','f-obs'].forEach(i=>document.getElementById(i).value='');
+  document.getElementById('f-naturaleza').value='';
+  document.getElementById('f-fecha').value=new Date().toISOString().slice(0,10);
+  document.getElementById('bloque-monto').style.display='none';
+  document.getElementById('nat-alerta').style.display='none';
+  document.getElementById('monto-hint').textContent='';
+  document.getElementById('umbral-info').textContent='';
+  document.getElementById('label-a').value='Adquirente / Comprador';
+  document.getElementById('label-b').value='Enajenante / Vendedor';
+  pA=[{id:'pi'+Date.now(),nombre:'',rfc:'',tipo:'pf',pct:'100'}];
+  pB=[{id:'pi'+Date.now()+1,nombre:'',rfc:'',tipo:'pf',pct:''}];
+  renderPs();
+}
+
+// ═══ EXPEDIENTES ÚNICOS ═══
+function docsReq(tipo){
+  if(tipo==='pm')return[
+    {id:'acta_const',label:'Escritura constitutiva (copia certificada) + inscripción en RPP',vig:false,opc:false},
+    {id:'cif',label:'Cédula de Identificación Fiscal (SAT)',vig:false,opc:false},
+    {id:'domicilio_fiscal',label:'Comprobante de domicilio fiscal (máx. 3 meses de antigüedad)',vig:true,opc:false},
+    {id:'poderes_rep',label:'Instrumento con poderes del representante legal (si no constan en acta constitutiva)',vig:false,opc:true},
+    {id:'id_rep',label:'Identificación oficial vigente del representante legal (INE/Pasaporte)',vig:true,opc:false},
+    {id:'dueno_benef',label:'Constancia solicitud Dueño Beneficiario (firmada por representante)',vig:false,opc:false},
+  ];
+  return[
+    {id:'ine',label:'Identificación oficial vigente — INE/IFE, Pasaporte o Cédula Profesional (con foto y firma)',vig:true,opc:false},
+    {id:'curp',label:'Constancia CURP o Cédula de Identificación Fiscal (SAT)',vig:false,opc:false},
+    {id:'domicilio',label:'Comprobante de domicilio (máx. 3 meses) — solo si no coincide con ID o la ID no lo contiene',vig:true,opc:true},
+    {id:'dueno_benef',label:'Constancia solicitud Dueño Beneficiario (firmada por el cliente)',vig:false,opc:false},
+    {id:'carta_poder',label:'Carta poder o instrumento notarial (si actúa como apoderado de otra persona)',vig:false,opc:true},
+    {id:'id_apoderado',label:'Identificación oficial del apoderado + comprobante de domicilio (si actúa como apoderado)',vig:true,opc:true},
+  ];
+}
+
+function getKey(p){return(p.rfc||p.nombre||'').toUpperCase().replace(/\s+/g,'_');}
+
+function updExps(esc){
+  const notId=curNot;if(!DB.expedientes[notId])DB.expedientes[notId]={};
+  const exp=DB.expedientes[notId];
+  function reg(persona,rol){
+    if(!persona.nombre&&!persona.rfc)return;
+    const k=getKey(persona);if(!k)return;
+    if(!exp[k])exp[k]={key:k,nombre:persona.nombre,rfc:persona.rfc,tipo:persona.tipo||'pf',escrituras:[],docs:{},datos:{},ts:Date.now()};
+    if(!exp[k].escrituras.find(x=>x.escId===esc.id))
+      exp[k].escrituras.push({escId:esc.id,num:esc.num,fecha:esc.fecha,naturaleza:esc.naturaleza,rol,year:curYear});
+    docsReq(exp[k].tipo).forEach(d=>{if(!exp[k].docs[d.id])exp[k].docs[d.id]={ok:false,nota:'',vigFecha:''};});
+    if(!exp[k].nombre&&persona.nombre)exp[k].nombre=persona.nombre;
+    if(!exp[k].rfc&&persona.rfc)exp[k].rfc=persona.rfc;
+  }
+  (esc.pA.personas||[]).forEach(p=>reg(p,esc.pA.label||'Parte A'));
+  (esc.pB.personas||[]).forEach(p=>reg(p,esc.pB.label||'Parte B'));
+}
+
+function getPct(e){
+  const docs=docsReq(e.tipo||'pf').filter(d=>!d.opc);
+  if(!docs.length)return 100;
+  return Math.round(docs.filter(d=>e.docs[d.id]&&e.docs[d.id].ok).length/docs.length*100);
+}
+
+function renderExps(){
+  const exp=DB.expedientes[curNot]||{};
+  const busq=(document.getElementById('buscar-exp').value||'').toLowerCase();
+  let items=Object.values(exp).filter(e=>!busq||(e.nombre+e.rfc).toLowerCase().includes(busq));
+  items.sort((a,b)=>(a.nombre||'').localeCompare(b.nombre||''));
+  const g=document.getElementById('exp-grid');
+  const em=document.getElementById('exp-empty');
+  if(!items.length){g.innerHTML='';em.style.display='block';return;}
+  em.style.display='none';
+  g.innerHTML=`<div class="three-col">`+items.map(e=>{
+    const pct=getPct(e);
+    const col=pct>=100?'var(--verde)':pct>=60?'var(--amarillo)':'var(--rojo)';
+    const cls=pct>=100?'completo':'incompleto';
+    const falt=pct<100?'<span style="color:var(--naranja)"> ⚠️</span>':'';
+    return `<div class="exp-card ${cls}">
+      <div class="flex-between">
+        <div>
+          <div style="font-weight:700">${e.nombre||'Sin nombre'}${falt}</div>
+          <div class="text-sm">${e.rfc||'Sin RFC'} · ${e.tipo==='pm'?'Persona Moral':'Persona Física'}</div>
+          <div class="text-sm" style="margin-top:2px">${e.escrituras.length} escritura(s): ${e.escrituras.slice(0,5).map(s=>s.num).join(', ')}${e.escrituras.length>5?'...':''}</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:22px;font-weight:800;color:${col}">${pct}%</div>
+          <button class="btn btn-outline btn-sm" style="margin-top:4px" onclick="openExp('${e.key}')">📋 Ver</button>
+        </div>
+      </div>
+      <div class="pct-bar"><div class="pct-fill" style="width:${pct}%;background:${col}"></div></div>
+    </div>`;
+  }).join('')+'</div>';
+}
+
+function openExp(key){
+  const exp=DB.expedientes[curNot]||{};
+  const e=exp[key];if(!e)return;
+  const pct=getPct(e);
+  const col=pct>=100?'var(--verde)':pct>=60?'var(--amarillo)':'var(--rojo)';
+  document.getElementById('modal-exp-title').textContent=`📋 ${e.nombre||'Expediente'}`;
+  const body=document.getElementById('modal-exp-body');
+  body.innerHTML=`
+  <div class="tabs">
+    <button class="tab-btn active" onclick="openTab(event,'td')">📝 Datos de Identificación</button>
+    <button class="tab-btn" onclick="openTab(event,'tdc')">📂 Checklist Documentos</button>
+    <button class="tab-btn" onclick="openTab(event,'te')">📋 Escrituras</button>
+  </div>
+  <div class="tab-pane active" id="td">${renderDatos(e)}</div>
+  <div class="tab-pane" id="tdc">
+    <div class="flex-between" style="margin-bottom:10px">
+      <div><b>Integridad:</b> <span style="color:${col};font-size:18px;font-weight:800;margin-left:6px">${pct}%</span></div>
+      <div class="text-sm">${docsReq(e.tipo).filter(d=>!d.opc&&e.docs[d.id]&&e.docs[d.id].ok).length} / ${docsReq(e.tipo).filter(d=>!d.opc).length} obligatorios</div>
+    </div>
+    <div class="pct-bar" id="modal-pct-bar" style="margin-bottom:14px"><div class="pct-fill" style="width:${pct}%;background:${col}"></div></div>
+    <div id="docs-list-${key}">${renderDocs(e,key)}</div>
+  </div>
+  <div class="tab-pane" id="te">
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>N°</th><th>Fecha</th><th>Naturaleza</th><th>Rol</th></tr></thead>
+      <tbody>${e.escrituras.map(s=>`<tr><td><b>${s.num}</b></td><td>${s.fecha}</td><td>${NAT_LABEL[s.naturaleza]||s.naturaleza}</td><td>${s.rol}</td></tr>`).join('')}</tbody>
+    </table></div>
+  </div>
+  <div style="margin-top:16px;text-align:right">
+    <button class="btn btn-primary" onclick="saveExp('${key}')">💾 Guardar cambios</button>
+  </div>`;
+  document.getElementById('modal-exp').classList.add('open');
+}
+
+function renderDatos(e){
+  const d=e.datos||{};
+  const pm=e.tipo==='pm';
+  if(pm)return`
+    <div class="row2">
+      <div class="fg"><label>Denominación / Razón Social</label><input id="dd-razon" value="${esc(d.razon||e.nombre||'')}"></div>
+      <div class="fg"><label>RFC</label><input id="dd-rfc" value="${esc(d.rfc||e.rfc||'')}"></div>
+    </div>
+    <div class="row3">
+      <div class="fg"><label>Fecha de Constitución</label><input type="date" id="dd-fnac" value="${d.fnac||''}"></div>
+      <div class="fg"><label>País de Nacionalidad</label><input id="dd-pnac" value="${esc(d.pnac||'México')}"></div>
+      <div class="fg"><label>Giro / Objeto Social</label><input id="dd-giro" value="${esc(d.giro||'')}"></div>
+    </div>
+    <div class="fg"><label>Folio Mercantil / Inscripción RPP</label><input id="dd-folio" value="${esc(d.folio||'')}"></div>
+    <hr class="divider"><b style="font-size:12px;color:var(--azul)">Domicilio Fiscal</b>
+    <div class="row2" style="margin-top:8px">
+      <div class="fg"><label>Calle y Número</label><input id="dd-calle" value="${esc(d.calle||'')}"></div>
+      <div class="fg"><label>Colonia</label><input id="dd-colonia" value="${esc(d.colonia||'')}"></div>
+    </div>
+    <div class="row4">
+      <div class="fg"><label>Municipio</label><input id="dd-mun" value="${esc(d.mun||'')}"></div>
+      <div class="fg"><label>Estado</label><input id="dd-est" value="${esc(d.est||'')}"></div>
+      <div class="fg"><label>C.P.</label><input id="dd-cp" value="${esc(d.cp||'')}"></div>
+      <div class="fg"><label>País</label><input id="dd-pais" value="${esc(d.pais||'México')}"></div>
+    </div>
+    <div class="row2">
+      <div class="fg"><label>Teléfono</label><input id="dd-tel" value="${esc(d.tel||'')}"></div>
+      <div class="fg"><label>Correo Electrónico</label><input id="dd-email" value="${esc(d.email||'')}"></div>
+    </div>
+    <hr class="divider"><b style="font-size:12px;color:var(--azul)">Representante Legal / Apoderado</b>
+    <div class="row2" style="margin-top:8px">
+      <div class="fg"><label>Nombre completo del Representante</label><input id="dd-repnombre" value="${esc(d.repnombre||'')}"></div>
+      <div class="fg"><label>RFC del Representante</label><input id="dd-reprfc" value="${esc(d.reprfc||'')}"></div>
+    </div>
+    <div class="row3">
+      <div class="fg"><label>CURP del Representante</label><input id="dd-repcurp" value="${esc(d.repcurp||'')}"></div>
+      <div class="fg"><label>Tipo de Identificación</label><input id="dd-tipoid" value="${esc(d.tipoid||'INE/IFE')}"></div>
+      <div class="fg"><label>N° de Identificación</label><input id="dd-numid" value="${esc(d.numid||'')}"></div>
+    </div>
+    <div class="fg"><label>¿Conocimiento de Dueño Beneficiario?</label>
+      <select id="dd-dueno">
+        <option value=""${!d.dueno?' selected':''}>— Sin respuesta —</option>
+        <option value="no"${d.dueno==='no'?' selected':''}>No tiene conocimiento</option>
+        <option value="si"${d.dueno==='si'?' selected':''}>Sí — identificar dueño beneficiario</option>
+      </select></div>`;
+
+  return`
+    <div class="row3">
+      <div class="fg"><label>Apellido Paterno</label><input id="dd-appaterno" value="${esc(d.appaterno||'')}"></div>
+      <div class="fg"><label>Apellido Materno</label><input id="dd-apmaterno" value="${esc(d.apmaterno||'')}"></div>
+      <div class="fg"><label>Nombre(s)</label><input id="dd-nombres" value="${esc(d.nombres||'')}"></div>
+    </div>
+    <div class="row4">
+      <div class="fg"><label>Fecha de Nacimiento</label><input type="date" id="dd-fnac" value="${d.fnac||''}"></div>
+      <div class="fg"><label>País de Nacimiento</label><input id="dd-pnac" value="${esc(d.pnac||'México')}"></div>
+      <div class="fg"><label>País de Nacionalidad</label><input id="dd-pnacionalidad" value="${esc(d.pnacionalidad||'México')}"></div>
+      <div class="fg"><label>Actividad / Ocupación</label><input id="dd-giro" value="${esc(d.giro||'')}"></div>
+    </div>
+    <div class="row2">
+      <div class="fg"><label>RFC</label><input id="dd-rfc" value="${esc(d.rfc||e.rfc||'')}"></div>
+      <div class="fg"><label>CURP</label><input id="dd-curp" value="${esc(d.curp||'')}"></div>
+    </div>
+    <hr class="divider"><b style="font-size:12px;color:var(--azul)">Domicilio</b>
+    <div class="row2" style="margin-top:8px">
+      <div class="fg"><label>Calle y Número</label><input id="dd-calle" value="${esc(d.calle||'')}"></div>
+      <div class="fg"><label>Colonia</label><input id="dd-colonia" value="${esc(d.colonia||'')}"></div>
+    </div>
+    <div class="row4">
+      <div class="fg"><label>Municipio</label><input id="dd-mun" value="${esc(d.mun||'')}"></div>
+      <div class="fg"><label>Estado</label><input id="dd-est" value="${esc(d.est||'')}"></div>
+      <div class="fg"><label>C.P.</label><input id="dd-cp" value="${esc(d.cp||'')}"></div>
+      <div class="fg"><label>País</label><input id="dd-pais" value="${esc(d.pais||'México')}"></div>
+    </div>
+    <div class="row2">
+      <div class="fg"><label>Teléfono</label><input id="dd-tel" value="${esc(d.tel||'')}"></div>
+      <div class="fg"><label>Correo Electrónico</label><input id="dd-email" value="${esc(d.email||'')}"></div>
+    </div>
+    <hr class="divider"><b style="font-size:12px;color:var(--azul)">Identificación Presentada</b>
+    <div class="row3" style="margin-top:8px">
+      <div class="fg"><label>Tipo de Identificación</label>
+        <select id="dd-tipoid">
+          <option${d.tipoid==='INE/IFE'?' selected':''}>INE/IFE</option>
+          <option${d.tipoid==='Pasaporte'?' selected':''}>Pasaporte</option>
+          <option${d.tipoid==='Cédula Profesional'?' selected':''}>Cédula Profesional</option>
+          <option${d.tipoid==='Cartilla Militar'?' selected':''}>Cartilla Militar</option>
+          <option${d.tipoid==='Otro'?' selected':''}>Otro</option>
+        </select></div>
+      <div class="fg"><label>Autoridad Emisora</label><input id="dd-idaut" value="${esc(d.idaut||'')}"></div>
+      <div class="fg"><label>N° de Identificación</label><input id="dd-numid" value="${esc(d.numid||'')}"></div>
+    </div>
+    <div class="fg"><label>¿Conocimiento de Dueño Beneficiario?</label>
+      <select id="dd-dueno">
+        <option value=""${!d.dueno?' selected':''}>— Sin respuesta —</option>
+        <option value="no"${d.dueno==='no'?' selected':''}>No tiene conocimiento</option>
+        <option value="si"${d.dueno==='si'?' selected':''}>Sí — identificar dueño beneficiario</option>
+      </select></div>`;
+}
+
+function renderDocs(e,key){
+  const docs=docsReq(e.tipo||'pf');
+  const hoy=new Date();
+  return docs.map(doc=>{
+    const d=e.docs[doc.id]||{ok:false,nota:'',vigFecha:''};
+    let vigWarn='';
+    if(doc.vig&&d.ok&&d.vigFecha){
+      const dias=(hoy-new Date(d.vigFecha))/(86400000);
+      if(dias>90)vigWarn='<span style="color:var(--rojo);font-size:10px;margin-left:4px">⚠️ Vencido (>3 meses)</span>';
+      else if(dias>60)vigWarn='<span style="color:var(--naranja);font-size:10px;margin-left:4px">⚠️ Por vencer pronto</span>';
+    }
+    const sc=d.ok?'verde':'rojo';
+    return`<div class="doc-item">
+      <div class="doc-semaforo ${sc}"></div>
+      <input type="checkbox" ${d.ok?'checked':''} style="width:16px;height:16px;flex-shrink:0;margin-top:2px;accent-color:var(--verde);cursor:pointer"
+        onchange="togDoc('${key}','${doc.id}',this.checked)">
+      <div style="flex:1">
+        <div style="font-size:12px">${doc.opc?'<span class="text-sm">[Opcional] </span>':''}${doc.label}${vigWarn}</div>
+        <div style="display:flex;gap:12px;margin-top:5px;flex-wrap:wrap">
+          ${doc.vig?`<div><label style="font-size:10px;color:var(--gris)">Fecha del documento:</label>
+            <input type="date" value="${d.vigFecha||''}" style="font-size:11px;padding:3px 6px;width:145px;margin-left:4px"
+              onchange="updDocVig('${key}','${doc.id}',this.value)"></div>`:''}
+          <div style="flex:1"><input value="${esc(d.nota||'')}" placeholder="Nota interna..." style="font-size:11px;padding:3px 6px"
+            oninput="updDocNota('${key}','${doc.id}',this.value)"></div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function togDoc(key,docId,val){
+  const exp=DB.expedientes[curNot]||{};if(!exp[key])return;
+  if(!exp[key].docs[docId])exp[key].docs[docId]={ok:false,nota:'',vigFecha:''};
+  exp[key].docs[docId].ok=val;saveDB();
+  document.getElementById('docs-list-'+key).innerHTML=renderDocs(exp[key],key);
+  const pct=getPct(exp[key]);const col=pct>=100?'var(--verde)':pct>=60?'var(--amarillo)':'var(--rojo)';
+  const bar=document.getElementById('modal-pct-bar');
+  if(bar)bar.innerHTML=`<div class="pct-fill" style="width:${pct}%;background:${col}"></div>`;
+}
+function updDocVig(key,docId,val){
+  const exp=DB.expedientes[curNot]||{};if(!exp[key]||!exp[key].docs[docId])return;
+  exp[key].docs[docId].vigFecha=val;saveDB();
+  document.getElementById('docs-list-'+key).innerHTML=renderDocs(exp[key],key);
+}
+function updDocNota(key,docId,val){
+  const exp=DB.expedientes[curNot]||{};if(!exp[key]||!exp[key].docs[docId])return;
+  exp[key].docs[docId].nota=val;
+  clearTimeout(window._nt);window._nt=setTimeout(()=>saveDB(),600);
+}
+
+function saveExp(key){
+  const exp=DB.expedientes[curNot]||{};if(!exp[key])return;
+  const e=exp[key];const d={};
+  ['rfc','curp','tipoid','numid','idaut','dueno','giro','pnac','pnacionalidad','fnac',
+   'calle','colonia','mun','est','cp','pais','tel','email',
+   'appaterno','apmaterno','nombres','razon','folio','repnombre','reprfc','repcurp'].forEach(id=>{
+    const el=document.getElementById('dd-'+id);if(el)d[id]=el.value;
+  });
+  e.datos=d;
+  if(d.razon)e.nombre=d.razon;
+  else if(d.appaterno||d.nombres)e.nombre=[d.appaterno,d.apmaterno,d.nombres].filter(Boolean).join(' ');
+  if(d.rfc)e.rfc=d.rfc;
+  saveDB();closeM('modal-exp');renderExps();
+}
+
+// ═══ RENDER ESCRITURAS ═══
+function renderEscs(){
+  const escs=getEscrituras();
+  const busq=(document.getElementById('buscar-esc').value||'').toLowerCase();
+  let filtered=escs.filter(e=>{
+    if(!busq)return true;
+    return[e.num,e.naturaleza,...(e.pA.personas||[]).map(p=>p.nombre+p.rfc),...(e.pB.personas||[]).map(p=>p.nombre+p.rfc),e.obs].join(' ').toLowerCase().includes(busq);
+  }).sort((a,b)=>a.num-b.num);
+
+  const vul=filtered.filter(e=>['inmueble','pm','siempre'].includes(e.tipo));
+  const aviso=filtered.filter(e=>{
+    if(e.tipo==='siempre')return true;
+    if(!['inmueble','pm'].includes(e.tipo)||!e.monto)return false;
+    const u=getUmbral(e.fecha,e.tipo==='pm'?'pm':'inmueble');return u&&e.monto>=u.umbral;
+  });
+  document.getElementById('lista-titulo').textContent=`Escrituras ${curYear} — ${curNot?DB.notarias[curNot].nombre:''}`;
+  document.getElementById('lista-stats').textContent=`${filtered.length} escrituras · ${vul.length} vulnerables · ${aviso.length} con aviso obligatorio`;
+
+  const tb=document.getElementById('tbody-escs');
+  const em=document.getElementById('escs-empty');
+  if(!filtered.length){tb.innerHTML='';em.style.display='block';return;}
+  em.style.display='none';
+
+  const expData=DB.expedientes[curNot]||{};
+
+  tb.innerHTML=filtered.map(e=>{
+    const tipo=e.tipo;
+    const chipC=tipo==='inmueble'?'chip-azul':tipo==='pm'?'chip-naranja':tipo==='siempre'?'chip-rojo':tipo==='revisar'?'chip-amarillo':'chip-gris';
+    const chipL=tipo==='inmueble'?'Inmueble':tipo==='pm'?'PM/Fid.':tipo==='siempre'?'Siempre ⚠️':tipo==='revisar'?'Revisar':'No vuln.';
+
+    let montoHtml='—';
+    if(e.monto&&tipo!=='no'){
+      if(tipo==='siempre'){montoHtml=`<span class="chip chip-rojo" style="font-size:10px">Aviso</span>`;}
+      else if(['inmueble','pm'].includes(tipo)){
+        const u=getUmbral(e.fecha,tipo==='pm'?'pm':'inmueble');
+        if(u){const p=e.monto/u.umbral*100;const mf='$'+fmt(e.monto);
+          if(p>=100)montoHtml=`<span style="color:var(--rojo);font-weight:700">🔴 ${mf}</span>`;
+          else if(p>=80)montoHtml=`<span style="color:var(--amarillo);font-weight:700">🟡 ${mf}</span>`;
+          else montoHtml=`<span style="color:var(--verde)">🟢 ${mf}</span>`;}
+      }
+    }
+
+    const pA_txt=(e.pA.personas||[]).map(p=>p.nombre||p.rfc||'?').join(', ')||'—';
+    const pB_txt=(e.pB.personas||[]).map(p=>p.nombre||p.rfc||'?').join(', ')||'—';
+
+    let expWarn='✅';
+    for(const p of [...(e.pA.personas||[]),...(e.pB.personas||[])]){
+      if(!p.nombre&&!p.rfc)continue;
+      const k=getKey(p);
+      if(expData[k]&&getPct(expData[k])<100){expWarn='⚠️';break;}
+    }
+
+    return`<tr>
+      <td><b>${e.num}</b></td><td>${e.fecha}</td>
+      <td style="max-width:130px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${NAT_LABEL[e.naturaleza]||e.naturaleza}">${NAT_LABEL[e.naturaleza]||e.naturaleza}</td>
+      <td style="max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${pA_txt}">${pA_txt}</td>
+      <td style="max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${pB_txt}">${pB_txt}</td>
+      <td>${montoHtml}</td>
+      <td><span class="chip ${chipC}">${chipL}</span></td>
+      <td title="${expWarn==='⚠️'?'Expediente(s) con documentos faltantes':''}">${expWarn}</td>
+      <td>
+        <button class="btn btn-ghost btn-xs" onclick="editEsc('${e.id}')">✏️</button>
+        <button class="btn btn-danger btn-xs" onclick="delEsc('${e.id}')">🗑️</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function editEsc(id){
+  const e=getEscrituras().find(x=>x.id===id);if(!e)return;
+  document.getElementById('f-num').value=e.num;
+  document.getElementById('f-libro').value=e.libro||'';
+  document.getElementById('f-fecha').value=e.fecha;
+  document.getElementById('f-naturaleza').value=e.naturaleza;
+  document.getElementById('f-monto').value=e.monto||'';
+  document.getElementById('f-obs').value=e.obs||'';
+  document.getElementById('label-a').value=e.pA.label||'Parte A';
+  document.getElementById('label-b').value=e.pB.label||'Parte B';
+  pA=JSON.parse(JSON.stringify(e.pA.personas||[]));
+  pB=JSON.parse(JSON.stringify(e.pB.personas||[]));
+  onNatChange();calcSemaforo();renderPs();
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
+function delEsc(id){
+  if(!confirm('¿Eliminar escritura?'))return;
+  const yd=getYD();yd.escrituras=yd.escrituras.filter(e=>e.id!==id);
+  saveDB();renderEscs();
+}
+
+// ═══ ACUMULADOS ═══
+function renderAcumulados(){
+  const n=getNot();if(!n)return;
+  const acum={};
+  for(const yr in n.years){
+    for(const e of(n.years[yr].escrituras||[])){
+      if(!['inmueble','pm'].includes(e.tipo))continue;
+      const personas=e.pA.personas||[];
+      personas.forEach(p=>{
+        if(!p.nombre&&!p.rfc)return;
+        const k=getKey(p);if(!k)return;
+        if(!acum[k])acum[k]={nombre:p.nombre,rfc:p.rfc,ops:[]};
+        const pct=personas.length===1?100:parseFloat(p.pct||0)||100/personas.length;
+        acum[k].ops.push({num:e.num,fecha:e.fecha,naturaleza:e.naturaleza,
+          monto:e.monto,pct,montoPropio:(e.monto||0)*pct/100,year:yr});
+      });
+    }
+  }
+  const items=Object.values(acum).sort((a,b)=>
+    b.ops.reduce((s,o)=>s+o.montoPropio,0)-a.ops.reduce((s,o)=>s+o.montoPropio,0));
+  const g=document.getElementById('acum-grid');
+  if(!items.length){g.innerHTML='<div class="empty-state"><div class="icon">📊</div>Sin datos.</div>';return;}
+  g.innerHTML=`<div class="three-col">`+items.map(a=>{
+    const tot=a.ops.reduce((s,o)=>s+o.montoPropio,0);
+    const col=tot>1500000?'var(--rojo)':tot>800000?'var(--naranja)':'var(--verde)';
+    return`<div class="card">
+      <div style="font-weight:700">${a.nombre||'Sin nombre'}</div>
+      <div class="text-sm">${a.rfc||'Sin RFC'}</div>
+      <div style="font-size:20px;font-weight:800;color:${col};margin:6px 0">$${fmt(tot)}</div>
+      <div class="acum-bar"><div class="acum-fill" style="width:${Math.min(tot/2000000*100,100)}%;background:${col}"></div></div>
+      <div class="text-sm" style="margin-top:4px">${a.ops.length} operación(es)</div>
+      <div style="margin-top:6px;max-height:100px;overflow-y:auto">
+        ${a.ops.map(o=>`<div class="text-sm" style="padding:3px 0;border-bottom:1px solid var(--borde)">Esc.${o.num}(${o.year}) — $${fmt(o.montoPropio)}${o.pct<100?` (${o.pct.toFixed(0)}%)`:''}
+        </div>`).join('')}
+      </div>
+    </div>`;
+  }).join('')+'</div>';
+}
+
+// ═══ AVISOS SAT ═══
+function guardarAviso(){
+  const num=parseInt(document.getElementById('sat-num').value);
+  if(!num)return alert('Ingresa número de escritura');
+  const nid=curNot;if(!DB.avisos[nid])DB.avisos[nid]={};
+  DB.avisos[nid][num]={num,folio:document.getElementById('sat-folio').value.trim(),
+    fecha:document.getElementById('sat-fecha').value,estado:document.getElementById('sat-estado').value,ts:Date.now()};
+  saveDB();renderAvisos();
+}
+function renderAvisos(){
+  const nid=curNot;const av=DB.avisos[nid]||{};
+  const escs=getEscrituras().filter(e=>['inmueble','pm','siempre'].includes(e.tipo));
+  document.getElementById('tbody-avisos').innerHTML=escs.sort((a,b)=>a.num-b.num).map(e=>{
+    const a=av[e.num]||{};const est=a.estado||'pendiente';
+    const cc=est==='presentado'?'chip-verde':est==='no_aplica'?'chip-gris':'chip-amarillo';
+    const cl=est==='presentado'?'Presentado ✅':est==='no_aplica'?'No aplica ⬜':'Pendiente ⏳';
+    const u=e.tipo!=='siempre'?getUmbral(e.fecha,e.tipo==='pm'?'pm':'inmueble'):null;
+    const over=u&&e.monto>=u.umbral?'<span class="chip chip-rojo" style="font-size:10px;margin-left:4px">Sobre umbral</span>':'';
+    return`<tr><td><b>${e.num}</b></td><td>${NAT_LABEL[e.naturaleza]||e.naturaleza}</td>
+      <td>${e.monto?'$'+fmt(e.monto):'—'}${over}</td>
+      <td>${a.folio||'—'}</td><td>${a.fecha||'—'}</td>
+      <td><span class="chip ${cc}">${cl}</span></td></tr>`;
+  }).join('');
+}
+
+// ═══ COMPARATIVO ═══
+function renderComparativo(){
+  const n=getNot();if(!n)return;
+  const yrs=Object.keys(n.years||{}).sort();
+  const g=document.getElementById('comp-grid');
+  if(!yrs.length){g.innerHTML='<div class="empty-state"><div class="icon">📈</div>Sin datos.</div>';return;}
+  g.innerHTML=`<div class="three-col">`+yrs.map(yr=>{
+    const escs=n.years[yr].escrituras||[];
+    const vul=escs.filter(e=>['inmueble','pm','siempre'].includes(e.tipo)).length;
+    const av=escs.filter(e=>{if(e.tipo==='siempre')return true;if(!['inmueble','pm'].includes(e.tipo)||!e.monto)return false;const u=getUmbral(e.fecha,e.tipo==='pm'?'pm':'inmueble');return u&&e.monto>=u.umbral;}).length;
+    return`<div class="card"><div class="card-title">📅 ${yr}</div>
+      <div class="row3">
+        <div style="text-align:center"><div style="font-size:26px;font-weight:800;color:var(--azul)">${escs.length}</div><div class="text-sm">Total</div></div>
+        <div style="text-align:center"><div style="font-size:26px;font-weight:800;color:var(--naranja)">${vul}</div><div class="text-sm">Vulnerables</div></div>
+        <div style="text-align:center"><div style="font-size:26px;font-weight:800;color:var(--rojo)">${av}</div><div class="text-sm">Con aviso</div></div>
+      </div></div>`;
+  }).join('')+'</div>';
+}
+
+// ═══ UMA ═══
+function renderUMA(){
+  const datos=[
+    {p:'01/02/2020 – 31/01/2021',u:86.88,mI:16000,mPM:8025},
+    {p:'01/02/2021 – 31/01/2022',u:89.62,mI:16000,mPM:8025},
+    {p:'01/02/2022 – 31/01/2023',u:96.22,mI:16000,mPM:8025},
+    {p:'01/02/2023 – 31/01/2024',u:103.74,mI:16000,mPM:8025},
+    {p:'01/02/2024 – 31/01/2025',u:108.57,mI:16000,mPM:8025},
+    {p:'01/02/2025 – 16/07/2025',u:113.14,mI:16000,mPM:8025},
+    {p:'17/07/2025 en adelante ★',u:113.14,mI:8000,mPM:4000,actual:true},
+  ];
+  document.getElementById('tbody-uma').innerHTML=datos.map(d=>`
+    <tr class="${d.actual?'uma-actual':''}">
+      <td>${d.p}</td><td>$${d.u.toFixed(2)}</td>
+      <td><b>$${fmt(d.u*d.mI)}</b> <span class="text-sm">(${d.mI.toLocaleString()} × $${d.u})</span></td>
+      <td><b>$${fmt(d.u*d.mPM)}</b> <span class="text-sm">(${d.mPM.toLocaleString()} × $${d.u})</span></td>
+    </tr>`).join('');
+}
+
+// ═══ IMPORTAR EXCEL (CSV) ═══
+function importExcel(input){
+  const f=input.files[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=e=>{
+    const lines=e.target.result.split('\n').slice(1).filter(l=>l.trim());
+    let cnt=0;const yd=getYD();if(!yd)return;
+    lines.forEach(line=>{
+      const c=line.split(',').map(x=>x.replace(/^"|"$/g,'').trim());
+      if(!c[0])return;
+      const ee={id:'e'+Date.now()+'_'+Math.random().toString(36).substr(2,4),
+        num:parseInt(c[0])||0,libro:c[1]||'',fecha:c[2]||'',naturaleza:c[3]||'',
+        monto:parseFloat(c[5])||0,obs:c[6]||'',
+        pA:{label:'Adquirente',personas:[{id:'i1',nombre:c[4]||'',rfc:'',tipo:'pf',pct:'100'}]},
+        pB:{label:'Enajenante',personas:[]},tipo:NAT_TIPO[c[3]]||'revisar',ts:Date.now()};
+      if(!yd.escrituras.find(x=>x.num===ee.num)){yd.escrituras.push(ee);cnt++;}
+    });
+    saveDB();renderEscs();alert(`✅ ${cnt} escrituras importadas.`);
+  };r.readAsText(f);
+}
+
+// ═══ HELPERS ═══
+function fmt(n){return Math.round(n).toLocaleString('es-MX');}
+function esc(s){return(s||'').toString().replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+function exportCSV(){
+  const escs=getEscrituras();
+  const rows=[['N°','Libro','Fecha','Naturaleza','Tipo','Monto','Parte A','Parte B','Obs']];
+  escs.forEach(e=>rows.push([e.num,e.libro,e.fecha,NAT_LABEL[e.naturaleza]||e.naturaleza,
+    e.tipo,e.monto,(e.pA.personas||[]).map(p=>p.nombre).join(' / '),
+    (e.pB.personas||[]).map(p=>p.nombre).join(' / '),e.obs]));
+  const csv=rows.map(r=>r.map(c=>`"${c||''}"`).join(',')).join('\n');
+  const a=document.createElement('a');
+  a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);
+  a.download=`AuditNot_${curNot}_${curYear}.csv`;a.click();
+}
+
+function backup(){
+  const a=document.createElement('a');
+  a.href='data:application/json;charset=utf-8,'+encodeURIComponent(JSON.stringify(DB,null,2));
+  a.download='AuditNot_backup_'+new Date().toISOString().slice(0,10)+'.auditnotpro';a.click();
+}
+
+function showPage(name){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('page-'+name)?.classList.add('active');
+  document.querySelectorAll('.nav-btn').forEach(b=>{
+    if(b.getAttribute('onclick')&&b.getAttribute('onclick').includes("'"+name+"'"))b.classList.add('active');
+  });
+  if(name==='escrituras'){renderEscs();renderYearSel();}
+  if(name==='expedientes')renderExps();
+  if(name==='acumulados')renderAcumulados();
+  if(name==='comparador')renderAvisos();
+  if(name==='comparativo')renderComparativo();
+  if(name==='uma')renderUMA();
+  if(name==='inicio')renderNotGrid();
+}
+
+function openTab(evt,id){
+  evt.target.closest('.modal').querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  evt.target.closest('.modal').querySelectorAll('.tab-pane').forEach(p=>p.classList.remove('active'));
+  evt.target.classList.add('active');
+  document.getElementById(id)?.classList.add('active');
+}
+
+function closeM(id){document.getElementById(id)?.classList.remove('open');}
+
+document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open');}));
+
+// ═══ INIT ═══
+loadDB();renderNotGrid();renderUMA();
+// Persona inicial por cada parte
+pA=[{id:'pi1',nombre:'',rfc:'',tipo:'pf',pct:'100'}];
+pB=[{id:'pi2',nombre:'',rfc:'',tipo:'pf',pct:''}];
+renderPs();
+document.getElementById('f-fecha').value=new Date().toISOString().slice(0,10);
+const firstNot=Object.keys(DB.notarias)[0];
+if(firstNot)selNot(firstNot);
+</script>
+</body>
+</html>
