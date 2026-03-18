@@ -13,7 +13,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getFirestore, doc, getDoc, setDoc, deleteDoc,
-  collection, getDocs, writeBatch, onSnapshot, query
+  collection, getDocs, writeBatch, onSnapshot
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -29,24 +29,19 @@ const app = initializeApp(firebaseConfig);
 const db  = getFirestore(app);
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ARQUITECTURA — SUBCOLECCIONES (escala a 10,000+ escrituras por año)
+// ARQUITECTURA — TODO EN SUBCOLECCIONES (escala a 300 notarías × 10,000 esc/año)
 //
-// Colecciones Firestore:
-//   notarias/{notId}                    → metadatos de la notaría (nombre, titular, estado)
-//   notarias/{notId}/escrituras/{escId} → UNA escritura por documento (~700 bytes c/u)
-//   globals/expedientes                 → expedientes de clientes (RFC como llave)
-//   globals/avisos                      → registro de avisos SAT
+//  notarias/{notId}                      → metadatos notaría
+//  notarias/{notId}/escrituras/{escId}   → una escritura por doc
+//  expedientes/{notId}_{clienteKey}      → un expediente de cliente por doc
+//  globals/avisos                        → avisos SAT (único doc pequeño)
 //
-// window.DB (en memoria) mantiene la misma estructura de siempre:
-//   { notarias: { [id]: { nombre, titular, estado, years: { [año]: { escrituras:[] } } } },
-//     expedientes: {}, avisos: {} }
-//
-// La capa Firebase traduce entre subcolecciones ↔ window.DB automáticamente.
-// El resto del código de la app NO necesita cambiar.
+// window.DB mantiene la misma estructura en memoria que antes.
+// Esta capa traduce automáticamente. El resto del código NO cambia.
 // ══════════════════════════════════════════════════════════════════════════════
 
-let _saving   = false;
-let _unsubs   = [];   // listeners activos
+let _saving = false;
+let _unsubs  = [];
 
 function ensureDB(){
   if(!window.DB)             window.DB = {notarias:{}, expedientes:{}, avisos:{}};
@@ -55,13 +50,24 @@ function ensureDB(){
   if(!window.DB.avisos)      window.DB.avisos      = {};
 }
 
-// ── saveDB — llamado por operaciones de UNA escritura o cambios pequeños ──────
-// Detecta qué notaría/año cambió y solo escribe lo necesario
+// ── saveDB — operaciones individuales (debounced desde el wrapper global) ──────
 async function saveDB(){
   _saving = true;
   window._syncStatus('💾 Guardando...');
   try{
-    await _flushPending();
+    await _writeAvisos();
+    // Solo notarías marcadas como dirty
+    const dirty = window._dirtyNots || new Set(Object.keys(window.DB.notarias));
+    for(const notId of dirty){
+      if(window.DB.notarias[notId]) await _writeNotaria(notId);
+    }
+    // Solo expedientes marcados como dirty
+    const dirtyExp = window._dirtyExps || new Set();
+    for(const expKey of dirtyExp){
+      await _writeExpediente(expKey);
+    }
+    window._dirtyNots = new Set();
+    window._dirtyExps = new Set();
     window._syncStatus('✅ Sincronizado');
     _backupLocal();
   }catch(e){
@@ -72,12 +78,24 @@ async function saveDB(){
   }
 }
 
-// ── saveDBImmediate — importaciones masivas (500-10,000 escrituras) ────────────
+// ── saveDBImmediate — importaciones masivas ────────────────────────────────────
 async function saveDBImmediate(){
   _saving = true;
   window._syncStatus('💾 Guardando importación...');
   try{
-    await _flushAll();
+    await _writeAvisos();
+    for(const notId of Object.keys(window.DB.notarias)){
+      await _writeNotaria(notId);
+    }
+    // Escribir todos los expedientes de la notaría activa
+    const notId = window._curNotForImport || Object.keys(window.DB.notarias)[0];
+    if(notId && window.DB.expedientes[notId]){
+      for(const clienteKey of Object.keys(window.DB.expedientes[notId])){
+        await _writeExpediente(notId+'___'+clienteKey);
+      }
+    }
+    window._dirtyNots = new Set();
+    window._dirtyExps = new Set();
     window._syncStatus('✅ Sincronizado');
     _backupLocal();
   }catch(e){
@@ -89,89 +107,66 @@ async function saveDBImmediate(){
   }
 }
 
-// ── _flushPending — escribe globals + notarías marcadas como dirty ─────────────
-async function _flushPending(){
-  ensureDB();
-  await _writeGlobals();
-  // Escribir solo notarías que tienen cambios pendientes
-  const dirty = window._dirtyNots || new Set(Object.keys(window.DB.notarias));
-  for(const notId of dirty){
-    if(window.DB.notarias[notId]) await _writeNotaria(notId);
-  }
-  window._dirtyNots = new Set();
+// ── Escribir avisos (documento único pequeño) ──────────────────────────────────
+async function _writeAvisos(){
+  await setDoc(doc(db,'globals','avisos'), { data: window.DB.avisos || {} });
 }
 
-// ── _flushAll — escribe todo (para importaciones) ─────────────────────────────
-async function _flushAll(){
-  ensureDB();
-  await _writeGlobals();
-  for(const notId of Object.keys(window.DB.notarias)){
-    await _writeNotaria(notId);
-  }
-  window._dirtyNots = new Set();
-}
-
-// ── _writeGlobals — expedientes y avisos ──────────────────────────────────────
-async function _writeGlobals(){
-  await setDoc(doc(db,'globals','expedientes'), { data: window.DB.expedientes || {} });
-  await setDoc(doc(db,'globals','avisos'),      { data: window.DB.avisos      || {} });
-}
-
-// ── _writeNotaria — escribe metadatos + todas las escrituras en batch ──────────
-// Usa writeBatch (max 500 ops por batch — Firestore lo exige)
-// Para notarías con 10,000 escrituras usamos múltiples batches automáticamente
+// ── Escribir notaría: metadatos + escrituras en batch ─────────────────────────
 async function _writeNotaria(notId){
   const not = window.DB.notarias[notId];
   if(!not) return;
 
-  // 1. Metadatos de la notaría (sin years)
+  // Metadatos (sin years)
   const { years, ...meta } = not;
   await setDoc(doc(db,'notarias',notId), meta);
 
-  // 2. Recolectar todas las escrituras de todos los años
-  const todasLasEscs = [];
+  // Recolectar todas las escrituras
+  const todasEscs = [];
   for(const yr in (years||{})){
     for(const esc of (years[yr].escrituras||[])){
-      todasLasEscs.push({ ...esc, _year: String(yr) });
+      todasEscs.push({ ...esc, _year: String(yr) });
     }
   }
 
-  // 3. Obtener escrituras existentes en Firestore para detectar eliminadas
+  // Obtener IDs existentes en Firestore
   const colRef = collection(db,'notarias',notId,'escrituras');
-  const existentes = await getDocs(colRef);
-  const idsEnFirestore = new Set(existentes.docs.map(d=>d.id));
-  const idsEnMemoria   = new Set(todasLasEscs.map(e=>e.id));
+  const existSnap = await getDocs(colRef);
+  const idsFirestore = new Set(existSnap.docs.map(d=>d.id));
+  const idsMemoria   = new Set(todasEscs.map(e=>e.id));
 
-  // 4. Escribir en batches de 490 operaciones (margen de seguridad)
+  // Batch upsert + delete (máx 500 ops por batch)
   const BATCH_SIZE = 490;
   let batch = writeBatch(db);
   let ops   = 0;
 
-  // Upsert escrituras
-  for(const esc of todasLasEscs){
+  const flush = async () => { await batch.commit(); batch = writeBatch(db); ops = 0; };
+
+  for(const esc of todasEscs){
     batch.set(doc(db,'notarias',notId,'escrituras',esc.id), esc);
-    ops++;
-    if(ops >= BATCH_SIZE){
-      await batch.commit();
-      batch = writeBatch(db);
-      ops   = 0;
-    }
+    if(++ops >= BATCH_SIZE) await flush();
   }
-
-  // Eliminar escrituras borradas desde la app
-  for(const fId of idsEnFirestore){
-    if(!idsEnMemoria.has(fId)){
+  for(const fId of idsFirestore){
+    if(!idsMemoria.has(fId)){
       batch.delete(doc(db,'notarias',notId,'escrituras',fId));
-      ops++;
-      if(ops >= BATCH_SIZE){
-        await batch.commit();
-        batch = writeBatch(db);
-        ops   = 0;
-      }
+      if(++ops >= BATCH_SIZE) await flush();
     }
   }
-
   if(ops > 0) await batch.commit();
+}
+
+// ── Escribir UN expediente de cliente ─────────────────────────────────────────
+// docId = "{notId}___{clienteKey}"  (triple guión para separar sin ambigüedad)
+async function _writeExpediente(docId){
+  const [notId, ...rest] = docId.split('___');
+  const clienteKey = rest.join('___');
+  const exp = (window.DB.expedientes[notId]||{})[clienteKey];
+  if(exp){
+    await setDoc(doc(db,'expedientes',docId), { notId, clienteKey, ...exp });
+  } else {
+    // Fue eliminado
+    await deleteDoc(doc(db,'expedientes',docId));
+  }
 }
 
 // ── loadDB — carga toda la BD al inicio ───────────────────────────────────────
@@ -179,36 +174,38 @@ async function loadDB(){
   window._syncStatus('⏳ Conectando...');
   ensureDB();
   try{
-    // Globals
-    const [expSnap, avsSnap] = await Promise.all([
-      getDoc(doc(db,'globals','expedientes')),
-      getDoc(doc(db,'globals','avisos'))
-    ]);
-    window.DB.expedientes = expSnap.exists() ? (expSnap.data().data || {}) : {};
-    window.DB.avisos      = avsSnap.exists() ? (avsSnap.data().data || {}) : {};
+    // Avisos
+    const avsSnap = await getDoc(doc(db,'globals','avisos'));
+    window.DB.avisos = avsSnap.exists() ? (avsSnap.data().data || {}) : {};
 
-    // Notarías
+    // Notarías + escrituras
     const notsSnap = await getDocs(collection(db,'notarias'));
     window.DB.notarias = {};
-
     for(const notDoc of notsSnap.docs){
-      const notId  = notDoc.id;
-      const meta   = notDoc.data();
-      meta.years   = {};
-
-      // Leer escrituras de esta notaría
+      const notId = notDoc.id;
+      const meta  = notDoc.data();
+      meta.years  = {};
       const escsSnap = await getDocs(collection(db,'notarias',notId,'escrituras'));
-      for(const escDoc of escsSnap.docs){
+      escsSnap.forEach(escDoc=>{
         const esc = escDoc.data();
         const yr  = esc._year || String(new Date().getFullYear());
-        if(!meta.years[yr]) meta.years[yr] = { escrituras: [] };
-        // No almacenar _year en memoria (es solo para Firestore)
+        if(!meta.years[yr]) meta.years[yr] = { escrituras:[] };
         const { _year, ...escData } = esc;
         meta.years[yr].escrituras.push(escData);
-      }
-
+      });
       window.DB.notarias[notId] = meta;
     }
+
+    // Expedientes — cada doc es un cliente
+    window.DB.expedientes = {};
+    const expsSnap = await getDocs(collection(db,'expedientes'));
+    expsSnap.forEach(expDoc=>{
+      const d = expDoc.data();
+      const { notId, clienteKey, ...expData } = d;
+      if(!notId||!clienteKey) return;
+      if(!window.DB.expedientes[notId]) window.DB.expedientes[notId]={};
+      window.DB.expedientes[notId][clienteKey] = expData;
+    });
 
     window._syncStatus('🟢 Conectado');
     window._onDBReady();
@@ -228,22 +225,30 @@ function _setupListeners(){
   _unsubs.forEach(u=>u());
   _unsubs=[];
 
-  // Globals
-  _unsubs.push(onSnapshot(doc(db,'globals','expedientes'), snap=>{
-    if(_saving) return;
-    if(snap.exists()){ window.DB.expedientes = snap.data().data||{}; window._onDBReady(); }
-  }));
+  // Avisos
   _unsubs.push(onSnapshot(doc(db,'globals','avisos'), snap=>{
     if(_saving) return;
     if(snap.exists()){ window.DB.avisos = snap.data().data||{}; window._onDBReady(); }
   }));
 
-  // Notarías — escuchar cambios en metadatos
-  for(const notId in window.DB.notarias){
-    _listenNotaria(notId);
-  }
+  // Expedientes — escuchar cambios individuales
+  _unsubs.push(onSnapshot(collection(db,'expedientes'), snap=>{
+    if(_saving) return;
+    snap.docChanges().forEach(change=>{
+      const d = change.doc.data();
+      const { notId, clienteKey, ...expData } = d;
+      if(!notId||!clienteKey) return;
+      if(!window.DB.expedientes[notId]) window.DB.expedientes[notId]={};
+      if(change.type==='removed'){
+        delete window.DB.expedientes[notId][clienteKey];
+      } else {
+        window.DB.expedientes[notId][clienteKey] = expData;
+      }
+      window._onDBReady();
+    });
+  }));
 
-  // Detectar nuevas notarías creadas desde otro dispositivo
+  // Notarías metadata
   _unsubs.push(onSnapshot(collection(db,'notarias'), snap=>{
     if(_saving) return;
     snap.docChanges().forEach(change=>{
@@ -252,19 +257,18 @@ function _setupListeners(){
         const meta = change.doc.data();
         meta.years = {};
         window.DB.notarias[notId] = meta;
-        // Cargar sus escrituras
         getDocs(collection(db,'notarias',notId,'escrituras')).then(escsSnap=>{
           escsSnap.forEach(escDoc=>{
             const esc = escDoc.data();
-            const yr  = esc._year || String(new Date().getFullYear());
+            const yr  = esc._year||String(new Date().getFullYear());
             if(!window.DB.notarias[notId].years[yr])
               window.DB.notarias[notId].years[yr]={escrituras:[]};
             const { _year, ...escData } = esc;
             window.DB.notarias[notId].years[yr].escrituras.push(escData);
           });
-          window._syncStatus('🔄 Nueva notaría detectada');
+          window._syncStatus('🔄 Nueva notaría');
           window._onDBReady();
-          _listenNotaria(notId);
+          _listenEscriturasNotaria(notId);
         });
       }
       if(change.type==='modified' && window.DB.notarias[notId]){
@@ -274,18 +278,21 @@ function _setupListeners(){
       }
     });
   }));
+
+  // Escrituras por notaría
+  for(const notId in window.DB.notarias){
+    _listenEscriturasNotaria(notId);
+  }
 }
 
-function _listenNotaria(notId){
-  // Escuchar cambios en escrituras de esta notaría (tiempo real entre usuarios)
+function _listenEscriturasNotaria(notId){
   _unsubs.push(onSnapshot(collection(db,'notarias',notId,'escrituras'), snap=>{
     if(_saving) return;
     if(!window.DB.notarias[notId]) return;
-    // Reconstruir years desde los docs actuales
     const years = {};
     snap.forEach(escDoc=>{
       const esc = escDoc.data();
-      const yr  = esc._year || String(new Date().getFullYear());
+      const yr  = esc._year||String(new Date().getFullYear());
       if(!years[yr]) years[yr]={escrituras:[]};
       const { _year, ...escData } = esc;
       years[yr].escrituras.push(escData);
@@ -300,10 +307,14 @@ function _backupLocal(){
   try{ localStorage.setItem('anpro_backup', JSON.stringify(window.DB)); }catch(_){}
 }
 
-// ── Marcar notaría como dirty para saveDB incremental ─────────────────────────
+// ── Marcar dirty para guardado incremental ────────────────────────────────────
 window._markDirty = (notId) => {
   if(!window._dirtyNots) window._dirtyNots = new Set();
-  window._dirtyNots.add(notId);
+  if(notId) window._dirtyNots.add(notId);
+};
+window._markDirtyExp = (notId, clienteKey) => {
+  if(!window._dirtyExps) window._dirtyExps = new Set();
+  window._dirtyExps.add(notId+'___'+clienteKey);
 };
 
 // Exponer al scope global
@@ -1074,6 +1085,8 @@ function updExps(esc){
     docsReq(exp[k].tipo).forEach(d=>{if(!exp[k].docs[d.id])exp[k].docs[d.id]={ok:false,nota:'',vigFecha:''};});
     if(!exp[k].nombre&&persona.nombre)exp[k].nombre=persona.nombre;
     if(!exp[k].rfc&&persona.rfc)exp[k].rfc=persona.rfc;
+    // Marcar este expediente como pendiente de guardar
+    if(window._markDirtyExp) window._markDirtyExp(nid, k);
   }
   (esc.pA.personas||[]).forEach(p=>reg(p,esc.pA.label||'Parte A'));
   (esc.pB.personas||[]).forEach(p=>reg(p,esc.pB.label||'Parte B'));
@@ -1231,7 +1244,7 @@ function renderDocs(e,key){
 function togDoc(key,docId,val){
   const exp=window.DB.expedientes[curNot]||{};if(!exp[key])return;
   if(!exp[key].docs[docId])exp[key].docs[docId]={ok:false,nota:'',vigFecha:''};
-  exp[key].docs[docId].ok=val;saveDB();
+  exp[key].docs[docId].ok=val;if(window._markDirtyExp)window._markDirtyExp(curNot,key);saveDB();
   document.getElementById('docs-list-'+key).innerHTML=renderDocs(exp[key],key);
   const pct=getPct(exp[key]);const col=pct>=100?'var(--verde)':pct>=60?'var(--amarillo)':'var(--rojo)';
   const bar=document.getElementById('mpb');
@@ -1239,13 +1252,13 @@ function togDoc(key,docId,val){
 }
 function updDocVig(key,docId,val){
   const exp=window.DB.expedientes[curNot]||{};if(!exp[key]||!exp[key].docs[docId])return;
-  exp[key].docs[docId].vigFecha=val;saveDB();
+  exp[key].docs[docId].vigFecha=val;if(window._markDirtyExp)window._markDirtyExp(curNot,key);saveDB();
   document.getElementById('docs-list-'+key).innerHTML=renderDocs(exp[key],key);
 }
 function updDocNota(key,docId,val){
   const exp=window.DB.expedientes[curNot]||{};if(!exp[key]||!exp[key].docs[docId])return;
   exp[key].docs[docId].nota=val;
-  clearTimeout(window._nt);window._nt=setTimeout(()=>saveDB(),800);
+  if(window._markDirtyExp)window._markDirtyExp(curNot,key);clearTimeout(window._nt);window._nt=setTimeout(()=>saveDB(),800);
 }
 function saveExp(key){
   const exp=window.DB.expedientes[curNot]||{};if(!exp[key])return;
@@ -1587,6 +1600,7 @@ function procesarFilas(rows){
   escsProcesadas.forEach(e=>updExps(e));
 
   // Guardar INMEDIATAMENTE sin debounce — crítico para evitar que onSnapshot sobreescriba
+  window._curNotForImport = curNot; // para que saveDBImmediate sepa qué notaría escribir
   if(window._saveDBImmediate){
     window._saveDBImmediate().then(()=>{
       renderEscs();renderExps();
