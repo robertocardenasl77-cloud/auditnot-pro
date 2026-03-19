@@ -11,10 +11,8 @@
 <!-- Firebase SDK (CDN — sin npm, sin instalación) -->
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import {
-  getFirestore, doc, getDoc, setDoc, deleteDoc,
-  collection, getDocs, writeBatch, onSnapshot
-} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, getDocs }
+  from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyApk8vX67I0nxV43CWBm77vkCbkDXTMPBo",
@@ -28,300 +26,83 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db  = getFirestore(app);
 
-// ══════════════════════════════════════════════════════════════════════════════
-// ARQUITECTURA — TODO EN SUBCOLECCIONES (escala a 300 notarías × 10,000 esc/año)
-//
-//  notarias/{notId}                      → metadatos notaría
-//  notarias/{notId}/escrituras/{escId}   → una escritura por doc
-//  expedientes/{notId}_{clienteKey}      → un expediente de cliente por doc
-//  globals/avisos                        → avisos SAT (único doc pequeño)
-//
-// window.DB mantiene la misma estructura en memoria que antes.
-// Esta capa traduce automáticamente. El resto del código NO cambia.
-// ══════════════════════════════════════════════════════════════════════════════
-
+// Bandera para evitar que onSnapshot sobreescriba mientras guardamos
 let _saving = false;
-let _unsubs  = [];
 
-function ensureDB(){
-  if(!window.DB)             window.DB = {notarias:{}, expedientes:{}, avisos:{}};
-  if(!window.DB.notarias)    window.DB.notarias    = {};
-  if(!window.DB.expedientes) window.DB.expedientes = {};
-  if(!window.DB.avisos)      window.DB.avisos      = {};
+// ── Guardar en Firestore ──────────────────────────────────────
+async function saveDB(){
+  _saving = true;
+  try{
+    await setDoc(doc(db,'auditnot','main'), window.DB);
+    window._syncStatus('✅ Sincronizado');
+  }catch(e){
+    window._syncStatus('❌ Error al guardar: '+e.message);
+    console.error(e);
+  } finally {
+    // Esperar 5 segundos antes de reactivar el listener (suficiente para 400+ escrituras)
+    setTimeout(()=>{ _saving = false; }, 5000);
+  }
 }
 
-// ── saveDB — operaciones individuales (debounced desde el wrapper global) ──────
-async function saveDB(){
+// ── Guardar inmediato — sin debounce, para importaciones grandes ──
+async function saveDBImmediate(){
   _saving = true;
   window._syncStatus('💾 Guardando...');
   try{
-    await _writeAvisos();
-    // Solo notarías marcadas como dirty
-    const dirty = window._dirtyNots || new Set(Object.keys(window.DB.notarias));
-    for(const notId of dirty){
-      if(window.DB.notarias[notId]) await _writeNotaria(notId);
-    }
-    // Solo expedientes marcados como dirty
-    const dirtyExp = window._dirtyExps || new Set();
-    for(const expKey of dirtyExp){
-      await _writeExpediente(expKey);
-    }
-    window._dirtyNots = new Set();
-    window._dirtyExps = new Set();
+    await setDoc(doc(db,'auditnot','main'), window.DB);
     window._syncStatus('✅ Sincronizado');
-    _backupLocal();
+    // Guardar también en localStorage como respaldo
+    try{localStorage.setItem('anpro_backup',JSON.stringify(window.DB));}catch(_){}
   }catch(e){
     window._syncStatus('❌ Error al guardar: '+e.message);
-    console.error('saveDB:', e);
+    console.error(e);
   } finally {
-    setTimeout(()=>{ _saving=false; }, 2000);
+    setTimeout(()=>{ _saving = false; }, 5000);
   }
 }
 
-// ── saveDBImmediate — importaciones masivas ────────────────────────────────────
-async function saveDBImmediate(){
-  _saving = true;
-  window._syncStatus('💾 Guardando importación...');
-  try{
-    await _writeAvisos();
-    for(const notId of Object.keys(window.DB.notarias)){
-      await _writeNotaria(notId);
-    }
-    // Escribir todos los expedientes de la notaría activa
-    const notId = window._curNotForImport || Object.keys(window.DB.notarias)[0];
-    if(notId && window.DB.expedientes[notId]){
-      for(const clienteKey of Object.keys(window.DB.expedientes[notId])){
-        await _writeExpediente(notId+'___'+clienteKey);
-      }
-    }
-    window._dirtyNots = new Set();
-    window._dirtyExps = new Set();
-    window._syncStatus('✅ Sincronizado');
-    _backupLocal();
-  }catch(e){
-    window._syncStatus('❌ Error al guardar: '+e.message);
-    console.error('saveDBImmediate:', e);
-    throw e;
-  } finally {
-    setTimeout(()=>{ _saving=false; }, 2000);
-  }
-}
-
-// ── Escribir avisos (documento único pequeño) ──────────────────────────────────
-async function _writeAvisos(){
-  await setDoc(doc(db,'globals','avisos'), { data: window.DB.avisos || {} });
-}
-
-// ── Escribir notaría: metadatos + escrituras en batch ─────────────────────────
-async function _writeNotaria(notId){
-  const not = window.DB.notarias[notId];
-  if(!not) return;
-
-  // Metadatos (sin years)
-  const { years, ...meta } = not;
-  await setDoc(doc(db,'notarias',notId), meta);
-
-  // Recolectar todas las escrituras
-  const todasEscs = [];
-  for(const yr in (years||{})){
-    for(const esc of (years[yr].escrituras||[])){
-      todasEscs.push({ ...esc, _year: String(yr) });
-    }
-  }
-
-  // Obtener IDs existentes en Firestore
-  const colRef = collection(db,'notarias',notId,'escrituras');
-  const existSnap = await getDocs(colRef);
-  const idsFirestore = new Set(existSnap.docs.map(d=>d.id));
-  const idsMemoria   = new Set(todasEscs.map(e=>e.id));
-
-  // Batch upsert + delete (máx 500 ops por batch)
-  const BATCH_SIZE = 490;
-  let batch = writeBatch(db);
-  let ops   = 0;
-
-  const flush = async () => { await batch.commit(); batch = writeBatch(db); ops = 0; };
-
-  for(const esc of todasEscs){
-    batch.set(doc(db,'notarias',notId,'escrituras',esc.id), esc);
-    if(++ops >= BATCH_SIZE) await flush();
-  }
-  for(const fId of idsFirestore){
-    if(!idsMemoria.has(fId)){
-      batch.delete(doc(db,'notarias',notId,'escrituras',fId));
-      if(++ops >= BATCH_SIZE) await flush();
-    }
-  }
-  if(ops > 0) await batch.commit();
-}
-
-// ── Escribir UN expediente de cliente ─────────────────────────────────────────
-// docId = "{notId}___{clienteKey}"  (triple guión para separar sin ambigüedad)
-async function _writeExpediente(docId){
-  const [notId, ...rest] = docId.split('___');
-  const clienteKey = rest.join('___');
-  const exp = (window.DB.expedientes[notId]||{})[clienteKey];
-  if(exp){
-    await setDoc(doc(db,'expedientes',docId), { notId, clienteKey, ...exp });
-  } else {
-    // Fue eliminado
-    await deleteDoc(doc(db,'expedientes',docId));
-  }
-}
-
-// ── loadDB — carga toda la BD al inicio ───────────────────────────────────────
+// ── Cargar desde Firestore y escuchar cambios en tiempo real ──
 async function loadDB(){
   window._syncStatus('⏳ Conectando...');
-  ensureDB();
   try{
-    // Avisos
-    const avsSnap = await getDoc(doc(db,'globals','avisos'));
-    window.DB.avisos = avsSnap.exists() ? (avsSnap.data().data || {}) : {};
-
-    // Notarías + escrituras
-    const notsSnap = await getDocs(collection(db,'notarias'));
-    window.DB.notarias = {};
-    for(const notDoc of notsSnap.docs){
-      const notId = notDoc.id;
-      const meta  = notDoc.data();
-      meta.years  = {};
-      const escsSnap = await getDocs(collection(db,'notarias',notId,'escrituras'));
-      escsSnap.forEach(escDoc=>{
-        const esc = escDoc.data();
-        const yr  = esc._year || String(new Date().getFullYear());
-        if(!meta.years[yr]) meta.years[yr] = { escrituras:[] };
-        const { _year, ...escData } = esc;
-        meta.years[yr].escrituras.push(escData);
-      });
-      window.DB.notarias[notId] = meta;
+    const snap = await getDoc(doc(db,'auditnot','main'));
+    if(snap.exists()){
+      window.DB = snap.data();
+      if(!window.DB.notarias)  window.DB.notarias={};
+      if(!window.DB.expedientes)window.DB.expedientes={};
+      if(!window.DB.avisos)    window.DB.avisos={};
+    } else {
+      window.DB = {notarias:{}, expedientes:{}, avisos:{}};
+      await setDoc(doc(db,'auditnot','main'), window.DB);
     }
-
-    // Expedientes — cada doc es un cliente
-    window.DB.expedientes = {};
-    const expsSnap = await getDocs(collection(db,'expedientes'));
-    expsSnap.forEach(expDoc=>{
-      const d = expDoc.data();
-      const { notId, clienteKey, ...expData } = d;
-      if(!notId||!clienteKey) return;
-      if(!window.DB.expedientes[notId]) window.DB.expedientes[notId]={};
-      window.DB.expedientes[notId][clienteKey] = expData;
-    });
-
     window._syncStatus('🟢 Conectado');
     window._onDBReady();
-    _setupListeners();
 
-  }catch(e){
-    window._syncStatus('❌ Sin conexión — '+e.message);
-    console.error('loadDB:', e);
-    try{ const d=localStorage.getItem('anpro_backup'); if(d) window.DB=JSON.parse(d); }catch(_){}
-    ensureDB();
-    window._onDBReady();
-  }
-}
-
-// ── Listeners tiempo real ──────────────────────────────────────────────────────
-function _setupListeners(){
-  _unsubs.forEach(u=>u());
-  _unsubs=[];
-
-  // Avisos
-  _unsubs.push(onSnapshot(doc(db,'globals','avisos'), snap=>{
-    if(_saving) return;
-    if(snap.exists()){ window.DB.avisos = snap.data().data||{}; window._onDBReady(); }
-  }));
-
-  // Expedientes — escuchar cambios individuales
-  _unsubs.push(onSnapshot(collection(db,'expedientes'), snap=>{
-    if(_saving) return;
-    snap.docChanges().forEach(change=>{
-      const d = change.doc.data();
-      const { notId, clienteKey, ...expData } = d;
-      if(!notId||!clienteKey) return;
-      if(!window.DB.expedientes[notId]) window.DB.expedientes[notId]={};
-      if(change.type==='removed'){
-        delete window.DB.expedientes[notId][clienteKey];
-      } else {
-        window.DB.expedientes[notId][clienteKey] = expData;
-      }
-      window._onDBReady();
-    });
-  }));
-
-  // Notarías metadata
-  _unsubs.push(onSnapshot(collection(db,'notarias'), snap=>{
-    if(_saving) return;
-    snap.docChanges().forEach(change=>{
-      const notId = change.doc.id;
-      if(change.type==='added' && !window.DB.notarias[notId]){
-        const meta = change.doc.data();
-        meta.years = {};
-        window.DB.notarias[notId] = meta;
-        getDocs(collection(db,'notarias',notId,'escrituras')).then(escsSnap=>{
-          escsSnap.forEach(escDoc=>{
-            const esc = escDoc.data();
-            const yr  = esc._year||String(new Date().getFullYear());
-            if(!window.DB.notarias[notId].years[yr])
-              window.DB.notarias[notId].years[yr]={escrituras:[]};
-            const { _year, ...escData } = esc;
-            window.DB.notarias[notId].years[yr].escrituras.push(escData);
-          });
-          window._syncStatus('🔄 Nueva notaría');
-          window._onDBReady();
-          _listenEscriturasNotaria(notId);
-        });
-      }
-      if(change.type==='modified' && window.DB.notarias[notId]){
-        const { years, ...meta } = change.doc.data();
-        Object.assign(window.DB.notarias[notId], meta);
+    // Escuchar cambios en tiempo real — ignorar si estamos guardando
+    onSnapshot(doc(db,'auditnot','main'), snap=>{
+      if(_saving) return;
+      if(snap.exists()){
+        window.DB = snap.data();
+        if(!window.DB.notarias)  window.DB.notarias={};
+        if(!window.DB.expedientes)window.DB.expedientes={};
+        if(!window.DB.avisos)    window.DB.avisos={};
+        window._syncStatus('🔄 Actualizado');
         window._onDBReady();
       }
     });
-  }));
-
-  // Escrituras por notaría
-  for(const notId in window.DB.notarias){
-    _listenEscriturasNotaria(notId);
+  }catch(e){
+    window._syncStatus('❌ Sin conexión — '+e.message);
+    try{const d=localStorage.getItem('anpro_backup');if(d)window.DB=JSON.parse(d);}catch(_){}
+    if(!window.DB)window.DB={notarias:{},expedientes:{},avisos:{}};
+    window._onDBReady();
   }
 }
 
-function _listenEscriturasNotaria(notId){
-  _unsubs.push(onSnapshot(collection(db,'notarias',notId,'escrituras'), snap=>{
-    if(_saving) return;
-    if(!window.DB.notarias[notId]) return;
-    const years = {};
-    snap.forEach(escDoc=>{
-      const esc = escDoc.data();
-      const yr  = esc._year||String(new Date().getFullYear());
-      if(!years[yr]) years[yr]={escrituras:[]};
-      const { _year, ...escData } = esc;
-      years[yr].escrituras.push(escData);
-    });
-    window.DB.notarias[notId].years = years;
-    window._syncStatus('🔄 Actualizado');
-    window._onDBReady();
-  }));
-}
-
-function _backupLocal(){
-  try{ localStorage.setItem('anpro_backup', JSON.stringify(window.DB)); }catch(_){}
-}
-
-// ── Marcar dirty para guardado incremental ────────────────────────────────────
-window._markDirty = (notId) => {
-  if(!window._dirtyNots) window._dirtyNots = new Set();
-  if(notId) window._dirtyNots.add(notId);
-};
-window._markDirtyExp = (notId, clienteKey) => {
-  if(!window._dirtyExps) window._dirtyExps = new Set();
-  window._dirtyExps.add(notId+'___'+clienteKey);
-};
-
-// Exponer al scope global
-window._saveDB          = saveDB;
+// Exponer funciones al scope global
+window._saveDB = saveDB;
 window._saveDBImmediate = saveDBImmediate;
-window._loadDB          = loadDB;
-window._setSaving       = (val) => { _saving = val; };
+window._loadDB = loadDB;
+window._setSaving = (val) => { _saving = val; };
 </script>
 
 <style>
@@ -464,6 +245,7 @@ tr:last-child td{border-bottom:none}
   <button class="nav-btn" onclick="showPage('comparador')">🔍 Comparador SAT</button>
   <button class="nav-btn" onclick="showPage('comparativo')">📈 Comparativo Años</button>
   <button class="nav-btn" onclick="showPage('uma')">📐 Tabla UMA</button>
+  <button class="nav-btn" onclick="showPage('xml')">📤 XML SAT</button>
   <button class="nav-btn" onclick="showPage('inicio')">🏠 Notarías</button>
 </div>
 
@@ -708,8 +490,145 @@ tr:last-child td{border-bottom:none}
     </div>
   </div>
 </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- PÁGINA: GENERADOR XML ANEXO 12 FEP                         -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="page" id="page-xml">
+  <div class="section-title">📤 Generador XML — Anexo 12 FEP</div>
+  <div class="section-sub">Art. 17 LFPIORPI — Aviso mensual al SAT/SPPLD (sppld.sat.gob.mx) · El notario sube el archivo manualmente</div>
+
+  <!-- PASO 1: DATOS DEL INFORME -->
+  <div class="card" style="margin-bottom:16px">
+    <div style="font-weight:700;font-size:14px;margin-bottom:12px;color:var(--azul)">① Datos del Informe</div>
+    <div class="row3">
+      <div class="fg" style="margin:0">
+        <label>Mes Reportado</label>
+        <input type="month" id="xml-mes" style="width:100%" oninput="xmlAutoRef()">
+      </div>
+      <div class="fg" style="margin:0">
+        <label>RFC del Notario <span style="font-size:11px;color:var(--gris)">(clave_sujeto_obligado)</span></label>
+        <input type="text" id="xml-rfc-notario" placeholder="XAXX010101000" maxlength="13" style="text-transform:uppercase;width:100%" oninput="xmlAutoRef()">
+      </div>
+      <div class="fg" style="margin:0">
+        <label>RFC Entidad Colegiada <span style="color:var(--gris);font-weight:400">(opcional)</span></label>
+        <input type="text" id="xml-rfc-colegiada" placeholder="Solo si aplica" maxlength="12" style="text-transform:uppercase;width:100%">
+      </div>
+    </div>
+    <div class="row3" style="margin-top:10px">
+      <div class="fg" style="margin:0">
+        <label>Tipo de Informe</label>
+        <select id="xml-tipo-informe" onchange="xmlToggleTipo()">
+          <option value="avisos">Con avisos (operaciones vulnerables)</option>
+          <option value="ceros">En ceros (sin operaciones en el mes)</option>
+        </select>
+      </div>
+      <div class="fg" style="margin:0" id="xml-bloque-ref">
+        <label>Referencia del Aviso <span style="font-size:11px;color:var(--gris)">(auto-generada, editable)</span></label>
+        <input type="text" id="xml-referencia" placeholder="NOT1-202501" maxlength="14" style="text-transform:uppercase;width:100%">
+      </div>
+      <div class="fg" style="margin:0" id="xml-bloque-prio">
+        <label>Prioridad</label>
+        <select id="xml-prioridad">
+          <option value="1">1 — Normal</option>
+          <option value="2">2 — 24 horas (urgente)</option>
+        </select>
+      </div>
+    </div>
+    <div class="row3" style="margin-top:10px" id="xml-bloque-alerta">
+      <div class="fg" style="margin:0">
+        <label>Tipo de Alerta</label>
+        <select id="xml-tipo-alerta" onchange="xmlToggleAlertaDesc()">
+          <option value="100">100 — Normal</option>
+          <option value="521">521 — Operación inusual</option>
+          <option value="1201">1201 — Operación con PEP</option>
+          <option value="1501">1501 — Vinculación con listas</option>
+          <option value="9999">9999 — Otro (especificar)</option>
+        </select>
+      </div>
+      <div class="fg" style="margin:0" id="xml-bloque-alerta-desc">
+        <label>Descripción de Alerta <span style="color:var(--gris);font-weight:400">(requerida si tipo=9999)</span></label>
+        <input type="text" id="xml-alerta-desc" placeholder="DESCRIPCION" style="text-transform:uppercase;width:100%">
+      </div>
+    </div>
+    <div style="font-weight:600;font-size:13px;margin:14px 0 8px;color:var(--azul)">Persona que solicita la formalización <span style="font-weight:400;color:var(--gris)">(persona_aviso)</span></div>
+    <div class="row3">
+      <div class="fg" style="margin:0"><label>Nombre(s)</label><input type="text" id="xml-pa-nombre" style="text-transform:uppercase;width:100%" placeholder="SIN ACENTOS NI CARACTERES ESPECIALES"></div>
+      <div class="fg" style="margin:0"><label>Apellido Paterno</label><input type="text" id="xml-pa-pat" style="text-transform:uppercase;width:100%"></div>
+      <div class="fg" style="margin:0"><label>Apellido Materno</label><input type="text" id="xml-pa-mat" style="text-transform:uppercase;width:100%"></div>
+    </div>
+    <div class="row3" style="margin-top:8px">
+      <div class="fg" style="margin:0"><label>Fecha Nacimiento <span style="color:var(--gris);font-weight:400">(opcional)</span></label><input type="date" id="xml-pa-fnac" style="width:100%"></div>
+      <div class="fg" style="margin:0"><label>RFC <span style="color:var(--gris);font-weight:400">(opcional)</span></label><input type="text" id="xml-pa-rfc" maxlength="13" style="text-transform:uppercase;width:100%" placeholder="XAXX010101000"></div>
+      <div class="fg" style="margin:0"><label>CURP <span style="color:var(--gris);font-weight:400">(opcional)</span></label><input type="text" id="xml-pa-curp" maxlength="18" style="text-transform:uppercase;width:100%"></div>
+    </div>
+    <!-- Modificatorio -->
+    <div style="margin-top:14px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:600">
+        <input type="checkbox" id="xml-es-mod" onchange="xmlToggleMod()"> ¿Es aviso modificatorio? (corrige uno anterior)
+      </label>
+      <div id="xml-mod-campos" style="display:none;margin-top:10px">
+        <div class="row3">
+          <div class="fg" style="margin:0">
+            <label>Folio del aviso a modificar <span style="font-size:11px;color:var(--gris)">(AAAA-N, ej: 2025-1)</span></label>
+            <input type="text" id="xml-mod-folio" placeholder="2025-1" style="width:100%">
+          </div>
+          <div class="fg" style="margin:0">
+            <label>Descripción de la modificación</label>
+            <input type="text" id="xml-mod-desc" placeholder="MOTIVO DE LA MODIFICACION" style="text-transform:uppercase;width:100%">
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PASO 2: OPERACIONES -->
+  <div id="xml-bloque-ops">
+    <div style="font-weight:700;font-size:14px;margin-bottom:12px;color:var(--azul)">② Operaciones del Aviso</div>
+    <div id="xml-ops-lista" style="margin-bottom:12px"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+      <button class="btn btn-outline" onclick="xmlAgregarOp()">➕ Agregar Operación Manualmente</button>
+      <button class="btn btn-ghost" onclick="xmlPrecargarDeEscs()">📋 Precargar desde escrituras del mes</button>
+    </div>
+  </div>
+
+  <!-- GENERAR -->
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px">
+    <button class="btn btn-primary" onclick="xmlGenerar()">⚙️ Generar XML</button>
+    <button class="btn btn-ghost" onclick="xmlLimpiar()">🗑️ Limpiar todo</button>
+  </div>
+
+  <!-- OUTPUT -->
+  <div id="xml-output-bloque" style="display:none">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <div style="font-weight:700;color:var(--azul)">XML Generado — listo para subir al SPPLD</div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary btn-sm" onclick="xmlDescargar()">⬇️ Descargar .xml</button>
+        <button class="btn btn-ghost btn-sm" onclick="xmlCopiar()">📋 Copiar</button>
+      </div>
+    </div>
+    <div id="xml-validacion" style="margin-bottom:8px"></div>
+    <pre id="xml-output" style="background:var(--bg);border:1px solid var(--borde);border-radius:8px;padding:16px;font-size:11px;overflow-x:auto;max-height:500px;white-space:pre-wrap;word-break:break-all"></pre>
+  </div>
+</div>
 
 </div><!-- /main -->
+
+<!-- MODAL OPERACIÓN XML -->
+<div class="modal-overlay" id="modal-xml-op">
+  <div class="modal" style="max-width:760px;max-height:90vh;overflow-y:auto">
+    <div class="modal-hdr">
+      <span id="xml-op-titulo">Datos de la Operación</span>
+      <button class="modal-close" onclick="closeM('modal-xml-op')">✕</button>
+    </div>
+    <div id="xml-op-body" style="padding:0"></div>
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button class="btn btn-primary" onclick="xmlGuardarOp()">💾 Guardar Operación</button>
+      <button class="btn btn-ghost" onclick="closeM('modal-xml-op')">Cancelar</button>
+    </div>
+  </div>
+</div>
 
 <!-- MODAL CAPTURA MONTOS EN LOTE -->
 <div class="modal-overlay" id="modal-montos">
@@ -846,13 +765,11 @@ window._onDBReady=function(){
 };
 
 function saveDB(){
-  // Marcar notaría activa como dirty para guardado incremental
-  if(curNot && window._markDirty) window._markDirty(curNot);
-  // Backup local inmediato
+  // Guardar backup local siempre
   try{localStorage.setItem('anpro_backup',JSON.stringify(window.DB));}catch(_){}
-  // Bloquear onSnapshot mientras guardamos
+  // Activar bandera inmediatamente para bloquear onSnapshot
   if(window._setSaving) window._setSaving(true);
-  // Debounce — agrupa cambios rápidos en una sola escritura a Firestore
+  // Debounce para no saturar Firestore
   clearTimeout(_saveTimer);
   _saveTimer=setTimeout(()=>{
     window._syncStatus('💾 Guardando...');
@@ -879,9 +796,50 @@ function renderNotGrid(){
     const n=window.DB.notarias[id];
     const cnt=Object.values(n.years||{}).reduce((s,y)=>s+(y.escrituras||[]).length,0);
     const d=document.createElement('div');d.className='not-card'+(curNot===id?' selected':'');
-    d.innerHTML=`<h3>${n.nombre}</h3><p>${n.titular||''}</p><p style="font-size:11px;margin-top:4px">${n.estado||''}</p><p style="margin-top:8px"><b>${cnt}</b> escrituras</p>`;
+    d.innerHTML=`
+      <div style="display:flex;justify-content:flex-end;gap:4px;margin-bottom:6px">
+        <button class="btn btn-ghost btn-xs" title="Editar" onclick="event.stopPropagation();editNotaria('${id}')">✏️</button>
+        <button class="btn btn-danger btn-xs" title="Eliminar" onclick="event.stopPropagation();delNotaria('${id}')">🗑️</button>
+      </div>
+      <h3>${n.nombre}</h3>
+      <p>${n.titular||''}</p>
+      <p style="font-size:11px;margin-top:4px">${n.estado||''}</p>
+      <p style="margin-top:8px"><b>${cnt}</b> escrituras</p>`;
     d.onclick=()=>selNot(id);g.appendChild(d);
   }
+}
+
+function editNotaria(id){
+  const n=window.DB.notarias[id];if(!n)return;
+  const nuevoNombre=prompt('Nombre de la notaría:',n.nombre);
+  if(nuevoNombre===null)return;
+  if(!nuevoNombre.trim()){alert('El nombre no puede estar vacío.');return;}
+  const nuevoTitular=prompt('Titular (notario):',n.titular||'');
+  if(nuevoTitular===null)return;
+  const nuevoEstado=prompt('Estado / municipio:',n.estado||'');
+  if(nuevoEstado===null)return;
+  n.nombre=nuevoNombre.trim();
+  n.titular=nuevoTitular.trim();
+  n.estado=nuevoEstado.trim();
+  if(curNot===id)document.getElementById('hdr-not-name').textContent=n.nombre;
+  saveDB();renderNotGrid();
+}
+
+function delNotaria(id){
+  const n=window.DB.notarias[id];if(!n)return;
+  const cnt=Object.values(n.years||{}).reduce((s,y)=>s+(y.escrituras||[]).length,0);
+  const msg=cnt>0
+    ? `⚠️ ATENCIÓN: La notaría "${n.nombre}" tiene ${cnt} escritura(s).\n\nSi la eliminas se perderán TODOS sus datos.\n\n¿Confirmas que deseas eliminarla definitivamente?`
+    : `¿Eliminar la notaría "${n.nombre}"? Esta acción no se puede deshacer.`;
+  if(!confirm(msg))return;
+  delete window.DB.notarias[id];
+  if(window.DB.expedientes)delete window.DB.expedientes[id];
+  if(curNot===id){
+    curNot=null;
+    document.getElementById('hdr-not-name').textContent='';
+    document.getElementById('main-nav').style.display='none';
+  }
+  saveDB();renderNotGrid();
 }
 function addNotaria(){
   const nom=document.getElementById('new-not-name').value.trim();
@@ -1085,8 +1043,6 @@ function updExps(esc){
     docsReq(exp[k].tipo).forEach(d=>{if(!exp[k].docs[d.id])exp[k].docs[d.id]={ok:false,nota:'',vigFecha:''};});
     if(!exp[k].nombre&&persona.nombre)exp[k].nombre=persona.nombre;
     if(!exp[k].rfc&&persona.rfc)exp[k].rfc=persona.rfc;
-    // Marcar este expediente como pendiente de guardar
-    if(window._markDirtyExp) window._markDirtyExp(nid, k);
   }
   (esc.pA.personas||[]).forEach(p=>reg(p,esc.pA.label||'Parte A'));
   (esc.pB.personas||[]).forEach(p=>reg(p,esc.pB.label||'Parte B'));
@@ -1244,7 +1200,7 @@ function renderDocs(e,key){
 function togDoc(key,docId,val){
   const exp=window.DB.expedientes[curNot]||{};if(!exp[key])return;
   if(!exp[key].docs[docId])exp[key].docs[docId]={ok:false,nota:'',vigFecha:''};
-  exp[key].docs[docId].ok=val;if(window._markDirtyExp)window._markDirtyExp(curNot,key);saveDB();
+  exp[key].docs[docId].ok=val;saveDB();
   document.getElementById('docs-list-'+key).innerHTML=renderDocs(exp[key],key);
   const pct=getPct(exp[key]);const col=pct>=100?'var(--verde)':pct>=60?'var(--amarillo)':'var(--rojo)';
   const bar=document.getElementById('mpb');
@@ -1252,13 +1208,13 @@ function togDoc(key,docId,val){
 }
 function updDocVig(key,docId,val){
   const exp=window.DB.expedientes[curNot]||{};if(!exp[key]||!exp[key].docs[docId])return;
-  exp[key].docs[docId].vigFecha=val;if(window._markDirtyExp)window._markDirtyExp(curNot,key);saveDB();
+  exp[key].docs[docId].vigFecha=val;saveDB();
   document.getElementById('docs-list-'+key).innerHTML=renderDocs(exp[key],key);
 }
 function updDocNota(key,docId,val){
   const exp=window.DB.expedientes[curNot]||{};if(!exp[key]||!exp[key].docs[docId])return;
   exp[key].docs[docId].nota=val;
-  if(window._markDirtyExp)window._markDirtyExp(curNot,key);clearTimeout(window._nt);window._nt=setTimeout(()=>saveDB(),800);
+  clearTimeout(window._nt);window._nt=setTimeout(()=>saveDB(),800);
 }
 function saveExp(key){
   const exp=window.DB.expedientes[curNot]||{};if(!exp[key])return;
@@ -1600,7 +1556,6 @@ function procesarFilas(rows){
   escsProcesadas.forEach(e=>updExps(e));
 
   // Guardar INMEDIATAMENTE sin debounce — crítico para evitar que onSnapshot sobreescriba
-  window._curNotForImport = curNot; // para que saveDBImmediate sepa qué notaría escribir
   if(window._saveDBImmediate){
     window._saveDBImmediate().then(()=>{
       renderEscs();renderExps();
@@ -1672,6 +1627,7 @@ function showPage(name){
   if(name==='comparativo')renderComparativo();
   if(name==='uma')renderUMA();
   if(name==='inicio')renderNotGrid();
+  if(name==='xml')xmlInitPage();
 }
 function openTab(evt,id){
   evt.target.closest('.modal').querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
@@ -1683,6 +1639,1163 @@ document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click
 
 // ═══ INIT ═══
 renderUMA();
+
+// ═══════════════════════════════════════════════════════════════
+// MÓDULO XML ANEXO 12 FEP — AuditNot Pro
+// ═══════════════════════════════════════════════════════════════
+let xmlOps = [];         // Array de operaciones del aviso actual
+let xmlOpEditIdx = null; // índice de operación en edición
+
+// ── Catálogos SAT ──────────────────────────────────────────────
+const XML_TIPO_PODER = {'1':'1 - Administración','2':'2 - Dominio','3':'3 - Pleitos y cobranzas'};
+const XML_TIPO_GARANTIA = {'1':'1 - Personal','2':'2 - Inmueble','3':'3 - Fideicomiso','4':'4 - Prenda','99':'99 - Otro'};
+const XML_TIPO_OTORGAMIENTO = {'1':'1 - Crédito','2':'2 - Mutuo'};
+const XML_TIPO_MOVIMIENTO_FID = {'1':'1 - Constitución','2':'2 - Modificación','3':'3 - Extinción','4':'4 - Otro'};
+const XML_TIPO_FIDEICOMISO = {'1':'1 - Traslativo de dominio','2':'2 - Garantía','3':'3 - Administración','4':'4 - Inversión','5':'5 - Otro'};
+const XML_TIPO_CESION = {'1':'1 - Fideicomitente','2':'2 - Fideicomisario'};
+const XML_TIPO_FUSION = {'1':'1 - Por incorporación','2':'2 - Por creación'};
+const XML_TIPO_BIEN = {'1':'1 - Inmueble','2':'2 - Mueble','3':'3 - Semoviente','4':'4 - Derechos','99':'99 - Otro'};
+const XML_TIPO_MOD_CAPITAL = {'1':'1 - Aumento','2':'2 - Disminución','3':'3 - Sin modificación'};
+const XML_TIPO_PM = {'1':'1 - SA','2':'2 - SRL','3':'3 - SC','4':'4 - AC','5':'5 - SAS','6':'6 - SAB','7':'7 - SAPI','99':'99 - Otra'};
+const XML_MOTIVO_CONST = {'1':'1 - Fusión','2':'2 - Escisión','3':'3 - Nueva constitución','4':'4 - Otro'};
+const XML_CARGO_ACC = {'1':'1 - Accionista','2':'2 - Socio','3':'3 - Miembro','4':'4 - Asociado','5':'5 - Administrador único','6':'6 - Consejero','7':'7 - Comisario'};
+const XML_INSTR_MON = {'1':'1 - Efectivo','2':'2 - Cheque','3':'3 - Transferencia','4':'4 - Tarjeta','5':'5 - Criptomoneda','6':'6 - Otro'};
+const XML_MONEDA = {'1':'1 - MXN (Peso mexicano)','2':'2 - USD (Dólar)','3':'3 - EUR (Euro)','4':'4 - Otra'};
+const XML_EF = {
+  '01':'01 - Aguascalientes','02':'02 - Baja California','03':'03 - Baja California Sur',
+  '04':'04 - Campeche','05':'05 - Coahuila','06':'06 - Colima','07':'07 - Chiapas',
+  '08':'08 - Chihuahua','09':'09 - Ciudad de México','10':'10 - Durango',
+  '11':'11 - Guanajuato','12':'12 - Guerrero','13':'13 - Hidalgo','14':'14 - Jalisco',
+  '15':'15 - Estado de México','16':'16 - Michoacán','17':'17 - Morelos','18':'18 - Nayarit',
+  '19':'19 - Nuevo León','20':'20 - Oaxaca','21':'21 - Puebla','22':'22 - Querétaro',
+  '23':'23 - Quintana Roo','24':'24 - San Luis Potosí','25':'25 - Sinaloa','26':'26 - Sonora',
+  '27':'27 - Tabasco','28':'28 - Tamaulipas','29':'29 - Tlaxcala','30':'30 - Veracruz',
+  '31':'31 - Yucatán','32':'32 - Zacatecas'
+};
+
+// Tipos de actividad disponibles (mapeo nombre → etiqueta XML)
+const XML_TIPOS_ACT = [
+  {val:'otorgamiento_poder',           label:'Otorgamiento de poder irrevocable'},
+  {val:'constitucion_personas_morales',label:'Constitución de persona moral'},
+  {val:'modificacion_patrimonial',     label:'Modificación patrimonial (capital)'},
+  {val:'fusion',                       label:'Fusión'},
+  {val:'escision',                     label:'Escisión'},
+  {val:'compra_venta_acciones',        label:'Compraventa de acciones/partes sociales'},
+  {val:'constitucion_modificacion_fideicomiso', label:'Constitución/modificación de fideicomiso'},
+  {val:'cesion_derechos_fideicomitente_fideicomisario', label:'Cesión de derechos fideicomiso'},
+  {val:'contrato_mutuo_credito',       label:'Contrato de mutuo o crédito'},
+  {val:'avaluo',                       label:'Avalúo'}
+];
+
+// Mapeo naturaleza del sistema → tipo actividad XML
+const NAT_A_XML = {
+  compraventa:'contrato_mutuo_credito', // traslado via mutuo/garantía no aplica directamente
+  dacion:'contrato_mutuo_credito',
+  donacion:'otorgamiento_poder',
+  permuta:'otorgamiento_poder',
+  adjudicacion_judicial:'otorgamiento_poder',
+  adjudicacion_herencia:'otorgamiento_poder',
+  cesion_derechos:'cesion_derechos_fideicomitente_fideicomisario',
+  poder_irrevocable_dominio:'otorgamiento_poder',
+  poder_irrevocable_admin:'otorgamiento_poder',
+  constitucion_pm:'constitucion_personas_morales',
+  transmision_acciones:'compra_venta_acciones',
+  modificacion_capital:'modificacion_patrimonial',
+  fusion_con_traslado:'fusion',
+  escision_con_traslado:'escision',
+  fideicomiso:'constitucion_modificacion_fideicomiso',
+  mutuo_no_financiero:'contrato_mutuo_credito',
+  avaluo:'avaluo'
+};
+
+// ── Helpers ────────────────────────────────────────────────────
+function xmlSanitize(s){
+  if(!s)return'';
+  return String(s).toUpperCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'') // quitar acentos
+    .replace(/[^A-ZÑ0-9 \-_\.&,#@'()\/:$]/g,' ')
+    .replace(/\s+/g,' ').trim();
+}
+function xmlFecha(d){
+  // convierte YYYY-MM-DD → YYYYMMDD
+  if(!d)return'';
+  return d.replace(/-/g,'');
+}
+function xmlMonto(v){
+  const n=parseFloat(v)||0;
+  return n.toFixed(2);
+}
+function selOpts(cat,val){
+  return Object.entries(cat).map(([k,l])=>`<option value="${k}"${val===k?' selected':''}>${l}</option>`).join('');
+}
+
+// ── Init / Toggle ──────────────────────────────────────────────
+function xmlInitPage(){
+  // Precargar RFC notario desde datos de la notaría activa si tiene titular
+  const n=getNot();
+  if(n&&n.rfc&&!document.getElementById('xml-rfc-notario').value){
+    document.getElementById('xml-rfc-notario').value=n.rfc.toUpperCase();
+  }
+  // Precargar mes actual
+  if(!document.getElementById('xml-mes').value){
+    const hoy=new Date();
+    document.getElementById('xml-mes').value=`${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,'0')}`;
+  }
+  xmlAutoRef();
+  xmlToggleTipo();
+  xmlToggleAlertaDesc();
+  xmlRenderOps();
+}
+
+function xmlAutoRef(){
+  const mes=document.getElementById('xml-mes').value||'';
+  const rfc=document.getElementById('xml-rfc-notario').value||'';
+  if(!mes||!rfc)return;
+  const aaaamm=mes.replace('-','');
+  // Intentar extraer número de notaría del nombre
+  const n=getNot();
+  const nombre=n?n.nombre:'NOT';
+  const num=nombre.match(/\d+/)?nombre.match(/\d+/)[0]:'1';
+  const ref=`NOT${num}-${aaaamm}`;
+  const inp=document.getElementById('xml-referencia');
+  if(!inp.value||inp.dataset.auto==='1'){inp.value=ref;inp.dataset.auto='1';}
+}
+
+function xmlToggleTipo(){
+  const t=document.getElementById('xml-tipo-informe').value;
+  const ops=document.getElementById('xml-bloque-ops');
+  const ref=document.getElementById('xml-bloque-ref');
+  const prio=document.getElementById('xml-bloque-prio');
+  const alerta=document.getElementById('xml-bloque-alerta');
+  if(t==='ceros'){
+    ops.style.display='none';ref.style.display='none';
+    prio.style.display='none';alerta.style.display='none';
+  } else {
+    ops.style.display='';ref.style.display='';
+    prio.style.display='';alerta.style.display='';
+  }
+}
+
+function xmlToggleAlertaDesc(){
+  const t=document.getElementById('xml-tipo-alerta').value;
+  document.getElementById('xml-bloque-alerta-desc').style.display=t==='9999'?'':'none';
+}
+
+function xmlToggleMod(){
+  const c=document.getElementById('xml-es-mod').checked;
+  document.getElementById('xml-mod-campos').style.display=c?'':'none';
+}
+
+// ── Operaciones ────────────────────────────────────────────────
+function xmlRenderOps(){
+  const c=document.getElementById('xml-ops-lista');
+  if(!xmlOps.length){
+    c.innerHTML='<div style="color:var(--gris);font-size:13px;padding:8px 0">Sin operaciones. Agrega o precarga desde escrituras.</div>';
+    return;
+  }
+  c.innerHTML=xmlOps.map((op,i)=>`
+    <div class="card" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <b>${op.instrumento}</b> — ${op.fecha_op||''} —
+        <span style="color:var(--azul)">${XML_TIPOS_ACT.find(t=>t.val===op.tipo_act)?.label||op.tipo_act}</span>
+      </div>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-ghost btn-xs" onclick="xmlEditOp(${i})">✏️</button>
+        <button class="btn btn-danger btn-xs" onclick="xmlDelOp(${i})">🗑️</button>
+      </div>
+    </div>`).join('');
+}
+
+function xmlDelOp(i){if(confirm('¿Eliminar operación?')){xmlOps.splice(i,1);xmlRenderOps();}}
+
+function xmlAgregarOp(){
+  xmlOpEditIdx=null;
+  document.getElementById('xml-op-titulo').textContent='Nueva Operación';
+  document.getElementById('xml-op-body').innerHTML=xmlFormOp(null);
+  document.getElementById('modal-xml-op').classList.add('open');
+}
+
+function xmlEditOp(i){
+  xmlOpEditIdx=i;
+  document.getElementById('xml-op-titulo').textContent='Editar Operación';
+  document.getElementById('xml-op-body').innerHTML=xmlFormOp(xmlOps[i]);
+  document.getElementById('modal-xml-op').classList.add('open');
+}
+
+// ── Formulario dinámico por tipo de actividad ──────────────────
+function xmlFormOp(op){
+  const tipo=op?.tipo_act||'';
+  return `
+  <div style="padding:0 0 12px">
+    <div class="row3" style="margin-bottom:12px">
+      <div class="fg" style="margin:0">
+        <label>N° Instrumento Público</label>
+        <input type="text" id="xop-instrumento" value="${es(op?.instrumento||'')}" maxlength="20" style="text-transform:uppercase;width:100%" placeholder="1234">
+      </div>
+      <div class="fg" style="margin:0">
+        <label>Fecha de la Operación</label>
+        <input type="date" id="xop-fecha" value="${op?.fecha_op||''}" style="width:100%">
+      </div>
+      <div class="fg" style="margin:0">
+        <label>Tipo de Actividad</label>
+        <select id="xop-tipo" onchange="xmlRenderActFields()" style="width:100%">
+          <option value="">-- Selecciona --</option>
+          ${XML_TIPOS_ACT.map(t=>`<option value="${t.val}"${tipo===t.val?' selected':''}>${t.label}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div id="xop-campos-act">${tipo?xmlCamposAct(tipo,op):''}</div>
+  </div>`;
+}
+
+function xmlRenderActFields(){
+  const tipo=document.getElementById('xop-tipo').value;
+  document.getElementById('xop-campos-act').innerHTML=tipo?xmlCamposAct(tipo,null):'';
+}
+
+// ── Campos específicos por tipo ────────────────────────────────
+function xmlCamposAct(tipo,op){
+  const d=op?.datos||{};
+  switch(tipo){
+    case 'otorgamiento_poder':      return xmlF_Poder(d);
+    case 'constitucion_personas_morales': return xmlF_ConstPM(d);
+    case 'modificacion_patrimonial': return xmlF_ModPat(d);
+    case 'fusion':                  return xmlF_Fusion(d);
+    case 'escision':                return xmlF_Escision(d);
+    case 'compra_venta_acciones':   return xmlF_CVAcciones(d);
+    case 'constitucion_modificacion_fideicomiso': return xmlF_Fideicomiso(d);
+    case 'cesion_derechos_fideicomitente_fideicomisario': return xmlF_Cesion(d);
+    case 'contrato_mutuo_credito':  return xmlF_Mutuo(d);
+    case 'avaluo':                  return xmlF_Avaluo(d);
+    default: return '<div style="color:var(--gris)">Selecciona un tipo de actividad para ver los campos.</div>';
+  }
+}
+
+// Helper: bloque persona (física, moral, fideicomiso)
+function xmlHPersona(pre,d={},label='Persona',reqs={}){
+  const tipo=d.tipo_persona||'fisica';
+  return `
+  <div class="card" style="margin:8px 0;background:var(--bg)">
+    <div style="font-weight:600;margin-bottom:8px">${label}</div>
+    <div class="fg" style="margin:0 0 8px">
+      <label>Tipo de persona</label>
+      <select id="${pre}-tipo" onchange="xmlTogglePersona('${pre}')">
+        <option value="fisica"${tipo==='fisica'?' selected':''}>Persona Física</option>
+        <option value="moral"${tipo==='moral'?' selected':''}>Persona Moral</option>
+        <option value="fideicomiso"${tipo==='fideicomiso'?' selected':''}>Fideicomiso</option>
+      </select>
+    </div>
+    <div id="${pre}-campos">${xmlPersonaCampos(pre,tipo,d,reqs)}</div>
+  </div>`;
+}
+
+function xmlTogglePersona(pre){
+  const tipo=document.getElementById(pre+'-tipo').value;
+  document.getElementById(pre+'-campos').innerHTML=xmlPersonaCampos(pre,tipo,{},{});
+}
+
+function xmlPersonaCampos(pre,tipo,d={},reqs={}){
+  if(tipo==='fisica') return `
+    <div class="row3">
+      <div class="fg" style="margin:0"><label>Nombre(s)</label><input id="${pre}-nombre" value="${es(d.nombre||'')}" style="text-transform:uppercase;width:100%" placeholder="SIN ACENTOS"></div>
+      <div class="fg" style="margin:0"><label>Ap. Paterno</label><input id="${pre}-pat" value="${es(d.pat||'')}" style="text-transform:uppercase;width:100%"></div>
+      <div class="fg" style="margin:0"><label>Ap. Materno</label><input id="${pre}-mat" value="${es(d.mat||'')}" style="text-transform:uppercase;width:100%" placeholder="o XXXX"></div>
+    </div>
+    <div class="row3" style="margin-top:8px">
+      <div class="fg" style="margin:0"><label>Fecha Nacimiento</label><input type="date" id="${pre}-fnac" value="${d.fnac||''}" style="width:100%"></div>
+      <div class="fg" style="margin:0"><label>RFC (13 car.)</label><input id="${pre}-rfc" value="${es(d.rfc||'')}" maxlength="13" style="text-transform:uppercase;width:100%"></div>
+      <div class="fg" style="margin:0"><label>CURP</label><input id="${pre}-curp" value="${es(d.curp||'')}" maxlength="18" style="text-transform:uppercase;width:100%"></div>
+    </div>
+    <div class="row3" style="margin-top:8px">
+      <div class="fg" style="margin:0"><label>País Nacionalidad (2 letras)</label><input id="${pre}-pais" value="${es(d.pais||'MX')}" maxlength="2" style="text-transform:uppercase;width:80px"></div>
+      <div class="fg" style="margin:0"><label>Actividad Económica (7 dígitos) <a href="https://sppld.sat.gob.mx" target="_blank" style="font-size:10px">catálogo SAT</a></label><input id="${pre}-acteco" value="${es(d.acteco||'')}" maxlength="7" placeholder="0000000" style="width:100%"></div>
+    </div>`;
+  if(tipo==='moral') return `
+    <div class="row3">
+      <div class="fg" style="margin:0"><label>Denominación/Razón Social</label><input id="${pre}-razon" value="${es(d.razon||'')}" style="text-transform:uppercase;width:100%"></div>
+      <div class="fg" style="margin:0"><label>RFC (12 car.)</label><input id="${pre}-rfc" value="${es(d.rfc||'')}" maxlength="12" style="text-transform:uppercase;width:100%"></div>
+      <div class="fg" style="margin:0"><label>Fecha Constitución</label><input type="date" id="${pre}-fcons" value="${d.fcons||''}" style="width:100%"></div>
+    </div>
+    <div class="row3" style="margin-top:8px">
+      <div class="fg" style="margin:0"><label>País Nacionalidad</label><input id="${pre}-pais" value="${es(d.pais||'MX')}" maxlength="2" style="text-transform:uppercase;width:80px"></div>
+      <div class="fg" style="margin:0"><label>Giro Mercantil (7 dígitos)</label><input id="${pre}-giro" value="${es(d.giro||'')}" maxlength="7" placeholder="0000000" style="width:100%"></div>
+    </div>`;
+  // fideicomiso
+  return `
+    <div class="row3">
+      <div class="fg" style="margin:0"><label>Denominación del Fiduciario</label><input id="${pre}-razon" value="${es(d.razon||'')}" style="text-transform:uppercase;width:100%"></div>
+      <div class="fg" style="margin:0"><label>RFC Fideicomiso (12 car.)</label><input id="${pre}-rfc" value="${es(d.rfc||'')}" maxlength="12" style="text-transform:uppercase;width:100%"></div>
+      <div class="fg" style="margin:0"><label>Identificador Fideicomiso</label><input id="${pre}-idfid" value="${es(d.idfid||'')}" maxlength="40" style="text-transform:uppercase;width:100%"></div>
+    </div>`;
+}
+
+// Leer persona de formulario
+function xmlLeerPersona(pre){
+  const tipo=document.getElementById(pre+'-tipo')?.value||'fisica';
+  if(tipo==='fisica') return {tipo_persona:'fisica',
+    nombre:xmlSanitize(document.getElementById(pre+'-nombre')?.value),
+    pat:xmlSanitize(document.getElementById(pre+'-pat')?.value),
+    mat:xmlSanitize(document.getElementById(pre+'-mat')?.value)||'XXXX',
+    fnac:xmlFecha(document.getElementById(pre+'-fnac')?.value),
+    rfc:document.getElementById(pre+'-rfc')?.value.toUpperCase()||'',
+    curp:document.getElementById(pre+'-curp')?.value.toUpperCase()||'',
+    pais:document.getElementById(pre+'-pais')?.value.toUpperCase()||'MX',
+    acteco:document.getElementById(pre+'-acteco')?.value||''};
+  if(tipo==='moral') return {tipo_persona:'moral',
+    razon:xmlSanitize(document.getElementById(pre+'-razon')?.value),
+    rfc:document.getElementById(pre+'-rfc')?.value.toUpperCase()||'',
+    fcons:xmlFecha(document.getElementById(pre+'-fcons')?.value),
+    pais:document.getElementById(pre+'-pais')?.value.toUpperCase()||'MX',
+    giro:document.getElementById(pre+'-giro')?.value||''};
+  return {tipo_persona:'fideicomiso',
+    razon:xmlSanitize(document.getElementById(pre+'-razon')?.value),
+    rfc:document.getElementById(pre+'-rfc')?.value.toUpperCase()||'',
+    idfid:xmlSanitize(document.getElementById(pre+'-idfid')?.value)};
+}
+
+// ── 1. Otorgamiento de poder ────────────────────────────────────
+function xmlF_Poder(d){
+  return `
+  <div class="alert alert-warn" style="margin-bottom:10px">⚠️ <b>SIEMPRE AVISO</b> — Inciso b) — Solo poderes irrevocables con facultades de administración o dominio.</div>
+  ${xmlHPersona('xp-poderdante',d.poderdante||{},'Poderdante')}
+  <div class="row3" style="margin:8px 0">
+    <div class="fg" style="margin:0"><label>Tipo de poder</label>
+    <select id="xp-tipo-poder" style="width:100%">${selOpts(XML_TIPO_PODER,d.tipo_poder||'2')}</select></div>
+  </div>
+  ${xmlHPersona('xp-apoderado',d.apoderado||{},'Apoderado')}`;
+}
+
+// ── 2. Constitución PM ─────────────────────────────────────────
+function xmlF_ConstPM(d){
+  return `
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>Tipo de persona moral</label><select id="xp-tipo-pm" style="width:100%">${selOpts(XML_TIPO_PM,d.tipo_pm||'1')}</select></div>
+    <div class="fg" style="margin:0"><label>Denominación/Razón Social</label><input id="xp-razon" value="${es(d.razon||'')}" style="text-transform:uppercase;width:100%"></div>
+    <div class="fg" style="margin:0"><label>Giro Mercantil (7 dígitos)</label><input id="xp-giro" value="${es(d.giro||'')}" maxlength="7" style="width:100%"></div>
+  </div>
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>Folio Mercantil</label><input id="xp-folio-m" value="${es(d.folio_m||'')}" style="text-transform:uppercase;width:100%"></div>
+    <div class="fg" style="margin:0"><label>Total de acciones</label><input id="xp-num-acc" type="number" value="${d.num_acc||''}" placeholder="100.00" style="width:100%"></div>
+    <div class="fg" style="margin:0"><label>Entidad Federativa</label><select id="xp-ef" style="width:100%">${selOpts(XML_EF,d.ef||'')}</select></div>
+  </div>
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>Consejo de vigilancia</label><select id="xp-consejo" style="width:100%"><option value="NO">NO</option><option value="SI"${d.consejo==='SI'?' selected':''}>SI</option></select></div>
+    <div class="fg" style="margin:0"><label>Motivo de constitución</label><select id="xp-motivo" style="width:100%">${selOpts(XML_MOTIVO_CONST,d.motivo||'3')}</select></div>
+    <div class="fg" style="margin:0"><label>Capital Fijo</label><input id="xp-cap-fijo" type="number" value="${d.cap_fijo||''}" placeholder="50000.00" style="width:100%"></div>
+  </div>
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>Capital Variable (opcional)</label><input id="xp-cap-var" type="number" value="${d.cap_var||''}" placeholder="0.00" style="width:100%"></div>
+  </div>
+  <div style="font-weight:600;margin:8px 0">Accionistas / Socios</div>
+  ${xmlHPersona('xp-acc1',d.acc1||{},'Accionista 1')}
+  <div class="fg" style="margin:4px 0"><label>Cargo accionista 1</label><select id="xp-acc1-cargo" style="width:200px">${selOpts(XML_CARGO_ACC,d.acc1_cargo||'1')}</select></div>
+  <div class="fg" style="margin:4px 0 12px"><label>Núm. acciones accionista 1</label><input id="xp-acc1-nacc" type="number" value="${d.acc1_nacc||''}" placeholder="100.00" style="width:200px"></div>`;
+}
+
+// ── 3. Modificación patrimonial ────────────────────────────────
+function xmlF_ModPat(d){
+  return `
+  <div style="font-weight:600;margin-bottom:8px">Persona Moral que se modifica</div>
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>Denominación/Razón Social</label><input id="xp-razon" value="${es(d.razon||'')}" style="text-transform:uppercase;width:100%"></div>
+    <div class="fg" style="margin:0"><label>RFC (12 car.)</label><input id="xp-rfc" value="${es(d.rfc||'')}" maxlength="12" style="text-transform:uppercase;width:100%"></div>
+    <div class="fg" style="margin:0"><label>Fecha Constitución</label><input type="date" id="xp-fcons" value="${d.fcons||''}" style="width:100%"></div>
+  </div>
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>País</label><input id="xp-pais" value="${d.pais||'MX'}" maxlength="2" style="text-transform:uppercase;width:80px"></div>
+    <div class="fg" style="margin:0"><label>Giro Mercantil</label><input id="xp-giro" value="${es(d.giro||'')}" maxlength="7" style="width:100%"></div>
+    <div class="fg" style="margin:0"><label>Total acciones</label><input id="xp-num-acc" type="number" value="${d.num_acc||''}" style="width:100%"></div>
+  </div>
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>Motivo modificación</label><select id="xp-motivo" style="width:100%">${selOpts(XML_MOTIVO_CONST,d.motivo||'3')}</select></div>
+  </div>
+  <div style="font-weight:600;margin:8px 0">Datos de la Modificación de Capital</div>
+  <div class="row3" style="margin-bottom:8px">
+    <div class="fg" style="margin:0"><label>Tipo mod. capital fijo</label><select id="xp-mod-cfijo" style="width:100%">${selOpts(XML_TIPO_MOD_CAPITAL,d.mod_cfijo||'1')}</select></div>
+    <div class="fg" style="margin:0"><label>Cap. fijo inicial</label><input id="xp-cfijo-ini" type="number" value="${d.cfijo_ini||''}" placeholder="50000.00" style="width:100%"></div>
+    <div class="fg" style="margin:0"><label>Cap. fijo final</label><input id="xp-cfijo-fin" type="number" value="${d.cfijo_fin||''}" style="width:100%"></div>
+  </div>
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>Tipo mod. capital variable</label><select id="xp-mod-cvar" style="width:100%">${selOpts(XML_TIPO_MOD_CAPITAL,d.mod_cvar||'3')}</select></div>
+    <div class="fg" style="margin:0"><label>Cap. variable inicial</label><input id="xp-cvar-ini" type="number" value="${d.cvar_ini||''}" placeholder="0.00" style="width:100%"></div>
+    <div class="fg" style="margin:0"><label>Cap. variable final</label><input id="xp-cvar-fin" type="number" value="${d.cvar_fin||''}" style="width:100%"></div>
+  </div>
+  ${xmlHPersona('xp-acc1',d.acc1||{},'Accionista vigente')}
+  <div class="fg" style="margin:4px 0 12px"><label>Núm. acciones</label><input id="xp-acc1-nacc" type="number" value="${d.acc1_nacc||''}" placeholder="100.00" style="width:200px"></div>`;
+}
+
+// ── 4. Fusión ──────────────────────────────────────────────────
+function xmlF_Fusion(d){
+  return `
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>Tipo de fusión</label><select id="xp-tipo-fusion" style="width:100%">${selOpts(XML_TIPO_FUSION,d.tipo_fusion||'1')}</select></div>
+  </div>
+  <div style="font-weight:600;margin:8px 0">Empresa Fusionada (desaparece)</div>
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>Denominación</label><input id="xp-fus-razon" value="${es(d.fus_razon||'')}" style="text-transform:uppercase;width:100%"></div>
+    <div class="fg" style="margin:0"><label>RFC (12 car.)</label><input id="xp-fus-rfc" value="${es(d.fus_rfc||'')}" maxlength="12" style="text-transform:uppercase;width:100%"></div>
+    <div class="fg" style="margin:0"><label>Fecha Constitución</label><input type="date" id="xp-fus-fcons" value="${d.fus_fcons||''}" style="width:100%"></div>
+  </div>
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>País</label><input id="xp-fus-pais" value="${d.fus_pais||'MX'}" maxlength="2" style="text-transform:uppercase;width:80px"></div>
+    <div class="fg" style="margin:0"><label>Giro Mercantil</label><input id="xp-fus-giro" value="${es(d.fus_giro||'')}" maxlength="7" style="width:100%"></div>
+    <div class="fg" style="margin:0"><label>Cap. social fijo</label><input id="xp-fus-cap" type="number" value="${d.fus_cap||''}" style="width:100%"></div>
+  </div>
+  <div style="font-weight:600;margin:8px 0">Empresa Fusionante (subsiste)</div>
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>¿Fusionante determinada?</label><select id="xp-fusante-det" onchange="xmlToggleFusante()" style="width:100%"><option value="SI">SI</option><option value="NO"${d.fusante_det==='NO'?' selected':''}>NO</option></select></div>
+  </div>
+  <div id="xp-fusante-bloque">
+    <div class="row3" style="margin-bottom:10px">
+      <div class="fg" style="margin:0"><label>Denominación</label><input id="xp-fusante-razon" value="${es(d.fusante_razon||'')}" style="text-transform:uppercase;width:100%"></div>
+      <div class="fg" style="margin:0"><label>RFC (12 car.)</label><input id="xp-fusante-rfc" value="${es(d.fusante_rfc||'')}" maxlength="12" style="text-transform:uppercase;width:100%"></div>
+      <div class="fg" style="margin:0"><label>País</label><input id="xp-fusante-pais" value="${d.fusante_pais||'MX'}" maxlength="2" style="text-transform:uppercase;width:80px"></div>
+    </div>
+    <div class="row3" style="margin-bottom:10px">
+      <div class="fg" style="margin:0"><label>Giro Mercantil</label><input id="xp-fusante-giro" value="${es(d.fusante_giro||'')}" maxlength="7" style="width:100%"></div>
+      <div class="fg" style="margin:0"><label>Cap. social fijo</label><input id="xp-fusante-cap" type="number" value="${d.fusante_cap||''}" style="width:100%"></div>
+      <div class="fg" style="margin:0"><label>Total acciones</label><input id="xp-fusante-nacc" type="number" value="${d.fusante_nacc||''}" style="width:100%"></div>
+    </div>
+    ${xmlHPersona('xp-fusante-acc',d.fusante_acc||{},'Accionista fusionante')}
+    <div class="fg" style="margin:4px 0 12px"><label>Núm. acciones</label><input id="xp-fusante-acc-nacc" type="number" value="${d.fusante_acc_nacc||''}" placeholder="100.00" style="width:200px"></div>
+  </div>`;
+}
+function xmlToggleFusante(){
+  const v=document.getElementById('xp-fusante-det')?.value;
+  const b=document.getElementById('xp-fusante-bloque');
+  if(b)b.style.display=v==='NO'?'none':'';
+}
+
+// ── 5. Escisión ────────────────────────────────────────────────
+function xmlF_Escision(d){
+  return `
+  <div style="font-weight:600;margin-bottom:8px">Empresa Escindente</div>
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>Denominación</label><input id="xp-esc-razon" value="${es(d.esc_razon||'')}" style="text-transform:uppercase;width:100%"></div>
+    <div class="fg" style="margin:0"><label>RFC (12 car.)</label><input id="xp-esc-rfc" value="${es(d.esc_rfc||'')}" maxlength="12" style="text-transform:uppercase;width:100%"></div>
+    <div class="fg" style="margin:0"><label>Fecha Constitución</label><input type="date" id="xp-esc-fcons" value="${d.esc_fcons||''}" style="width:100%"></div>
+  </div>
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>País</label><input id="xp-esc-pais" value="${d.esc_pais||'MX'}" maxlength="2" style="text-transform:uppercase;width:80px"></div>
+    <div class="fg" style="margin:0"><label>Giro Mercantil</label><input id="xp-esc-giro" value="${es(d.esc_giro||'')}" maxlength="7" style="width:100%"></div>
+    <div class="fg" style="margin:0"><label>Cap. social fijo</label><input id="xp-esc-cap" type="number" value="${d.esc_cap||''}" style="width:100%"></div>
+  </div>
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>¿Escindente subsiste?</label><select id="xp-esc-subsiste" style="width:100%"><option value="SI">SI</option><option value="NO"${d.esc_subsiste==='NO'?' selected':''}>NO</option></select></div>
+  </div>
+  <div style="font-weight:600;margin:8px 0">Empresa Escindida</div>
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>¿Escindidas determinadas?</label><select id="xp-escindidas-det" style="width:100%"><option value="SI">SI</option><option value="NO"${d.escindidas_det==='NO'?' selected':''}>NO</option></select></div>
+    <div class="fg" style="margin:0"><label>Denominación escindida</label><input id="xp-escindida-razon" value="${es(d.escindida_razon||'')}" style="text-transform:uppercase;width:100%"></div>
+    <div class="fg" style="margin:0"><label>RFC escindida</label><input id="xp-escindida-rfc" value="${es(d.escindida_rfc||'')}" maxlength="12" style="text-transform:uppercase;width:100%"></div>
+  </div>
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>País escindida</label><input id="xp-escindida-pais" value="${d.escindida_pais||'MX'}" maxlength="2" style="text-transform:uppercase;width:80px"></div>
+    <div class="fg" style="margin:0"><label>Giro Mercantil</label><input id="xp-escindida-giro" value="${es(d.escindida_giro||'')}" maxlength="7" style="width:100%"></div>
+    <div class="fg" style="margin:0"><label>Cap. social fijo</label><input id="xp-escindida-cap" type="number" value="${d.escindida_cap||''}" style="width:100%"></div>
+  </div>
+  <div class="fg" style="margin:0 0 10px"><label>Total acciones escindida</label><input id="xp-escindida-nacc" type="number" value="${d.escindida_nacc||''}" style="width:200px"></div>
+  ${xmlHPersona('xp-escindida-acc',d.escindida_acc||{},'Accionista escindida')}
+  <div class="fg" style="margin:4px 0 12px"><label>Núm. acciones</label><input id="xp-escindida-acc-nacc" type="number" value="${d.escindida_acc_nacc||''}" placeholder="100.00" style="width:200px"></div>`;
+}
+
+// ── 6. Compraventa acciones ────────────────────────────────────
+function xmlF_CVAcciones(d){
+  return `
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>Tipo operación</label><select id="xp-tipo-op" style="width:100%"><option value="1"${d.tipo_op==='1'?' selected':''}>1 - Compra</option><option value="2"${d.tipo_op==='2'?' selected':''}>2 - Venta</option></select></div>
+  </div>
+  <div style="font-weight:600;margin:8px 0">Persona Moral cuyas acciones se transmiten</div>
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>Denominación</label><input id="xp-pm-razon" value="${es(d.pm_razon||'')}" style="text-transform:uppercase;width:100%"></div>
+    <div class="fg" style="margin:0"><label>RFC (12 car.)</label><input id="xp-pm-rfc" value="${es(d.pm_rfc||'')}" maxlength="12" style="text-transform:uppercase;width:100%"></div>
+    <div class="fg" style="margin:0"><label>País</label><input id="xp-pm-pais" value="${d.pm_pais||'MX'}" maxlength="2" style="text-transform:uppercase;width:80px"></div>
+  </div>
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>Valor nominal total</label><input id="xp-pm-val-nom" type="number" value="${d.pm_val_nom||''}" style="width:100%"></div>
+    <div class="fg" style="margin:0"><label>Total acciones</label><input id="xp-pm-nacc" type="number" value="${d.pm_nacc||''}" style="width:100%"></div>
+  </div>
+  ${xmlHPersona('xp-vendedor',d.vendedor||{},'Vendedor')}
+  <div class="fg" style="margin:4px 0 8px"><label>Núm. acciones vendidas</label><input id="xp-nacc-vend" type="number" value="${d.nacc_vend||''}" style="width:200px"></div>
+  ${xmlHPersona('xp-comprador',d.comprador||{},'Comprador')}
+  <div class="fg" style="margin:4px 0 12px"><label>Núm. acciones compradas</label><input id="xp-nacc-comp" type="number" value="${d.nacc_comp||''}" style="width:200px"></div>
+  <div style="font-weight:600;margin:8px 0">Datos de Liquidación</div>
+  <div class="row3">
+    <div class="fg" style="margin:0"><label>Fecha de pago</label><input type="date" id="xp-fecha-pago" value="${d.fecha_pago||''}" style="width:100%"></div>
+    <div class="fg" style="margin:0"><label>Instrumento monetario</label><select id="xp-instr-mon" style="width:100%">${selOpts(XML_INSTR_MON,d.instr_mon||'1')}</select></div>
+    <div class="fg" style="margin:0"><label>Moneda</label><select id="xp-moneda" style="width:100%">${selOpts(XML_MONEDA,d.moneda||'1')}</select></div>
+  </div>
+  <div class="fg" style="margin:8px 0"><label>Monto de la operación</label><input id="xp-monto" type="number" value="${d.monto||''}" placeholder="1800000.00" style="width:200px"></div>`;
+}
+
+// ── 7. Fideicomiso ─────────────────────────────────────────────
+function xmlF_Fideicomiso(d){
+  return `
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>Tipo de movimiento</label><select id="xp-tipo-mov" style="width:100%">${selOpts(XML_TIPO_MOVIMIENTO_FID,d.tipo_mov||'1')}</select></div>
+    <div class="fg" style="margin:0"><label>Tipo de fideicomiso</label><select id="xp-tipo-fid" style="width:100%">${selOpts(XML_TIPO_FIDEICOMISO,d.tipo_fid||'1')}</select></div>
+    <div class="fg" style="margin:0"><label>Identificador</label><input id="xp-idfid" value="${es(d.idfid||'')}" maxlength="40" style="text-transform:uppercase;width:100%"></div>
+  </div>
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>Denominación del fideicomiso</label><input id="xp-fid-razon" value="${es(d.fid_razon||'')}" style="text-transform:uppercase;width:100%"></div>
+    <div class="fg" style="margin:0"><label>RFC fideicomiso (12 car.)</label><input id="xp-fid-rfc" value="${es(d.fid_rfc||'')}" maxlength="12" style="text-transform:uppercase;width:100%"></div>
+    <div class="fg" style="margin:0"><label>Monto patrimonio</label><input id="xp-monto-pat" type="number" value="${d.monto_pat||''}" style="width:100%"></div>
+  </div>
+  <div class="fg" style="margin:0 0 10px"><label>Descripción (opcional)</label><input id="xp-desc" value="${es(d.desc||'')}" style="text-transform:uppercase;width:100%"></div>
+  ${xmlHPersona('xp-fideicomitente',d.fideicomitente||{},'Fideicomitente')}
+  <div style="font-weight:600;margin:10px 0 4px">Tipo movimiento fideicomitente</div>
+  <select id="xp-mov-fideit" style="width:220px;margin-bottom:8px"><option value="1"${d.mov_fideit==='1'?' selected':''}>1 - Alta</option><option value="2"${d.mov_fideit==='2'?' selected':''}>2 - Baja</option><option value="3"${d.mov_fideit==='3'?' selected':''}>3 - Modificación</option></select>
+  <div style="font-weight:600;margin:8px 0 4px">Patrimonio aportado</div>
+  <div class="row3">
+    <div class="fg" style="margin:0"><label>Tipo de patrimonio</label><select id="xp-tipo-pat" style="width:100%"><option value="monetario">Monetario</option><option value="inmueble"${d.tipo_pat==='inmueble'?' selected':''}>Inmueble</option><option value="otro"${d.tipo_pat==='otro'?' selected':''}>Otro bien</option></select></div>
+    <div class="fg" style="margin:0"><label>Moneda (si monetario)</label><select id="xp-moneda" style="width:100%">${selOpts(XML_MONEDA,d.moneda||'1')}</select></div>
+    <div class="fg" style="margin:0"><label>Monto / Valor</label><input id="xp-monto-aport" type="number" value="${d.monto_aport||''}" style="width:100%"></div>
+  </div>
+  <div style="font-weight:600;margin:10px 0 4px">Fideicomisarios</div>
+  <div class="row3" style="margin-bottom:8px">
+    <div class="fg" style="margin:0"><label>¿Determinados?</label><select id="xp-fid-det" style="width:100%"><option value="SI">SI</option><option value="NO"${d.fid_det==='NO'?' selected':''}>NO</option></select></div>
+  </div>
+  ${xmlHPersona('xp-fideicomisario',d.fideicomisario||{},'Fideicomisario (si determinado)')}
+  <div style="font-weight:600;margin:10px 0 4px">Comité técnico</div>
+  <div class="row3">
+    <div class="fg" style="margin:0"><label>¿Tiene comité técnico?</label><select id="xp-comite" style="width:100%"><option value="NO">NO</option><option value="SI"${d.comite==='SI'?' selected':''}>SI</option></select></div>
+    <div class="fg" style="margin:0"><label>¿Modificación al comité?</label><select id="xp-mod-comite" style="width:100%"><option value="NO">NO</option><option value="SI"${d.mod_comite==='SI'?' selected':''}>SI</option></select></div>
+  </div>`;
+}
+
+// ── 8. Cesión de derechos fideicomiso ──────────────────────────
+function xmlF_Cesion(d){
+  return `
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>Identificador Fideicomiso</label><input id="xp-idfid" value="${es(d.idfid||'')}" maxlength="40" style="text-transform:uppercase;width:100%"></div>
+    <div class="fg" style="margin:0"><label>RFC Fideicomiso (12 car.)</label><input id="xp-fid-rfc" value="${es(d.fid_rfc||'')}" maxlength="12" style="text-transform:uppercase;width:100%"></div>
+    <div class="fg" style="margin:0"><label>Denominación fideicomiso</label><input id="xp-fid-razon" value="${es(d.fid_razon||'')}" style="text-transform:uppercase;width:100%"></div>
+  </div>
+  <div class="fg" style="margin:0 0 10px"><label>Tipo de cesión</label><select id="xp-tipo-cesion" style="width:220px">${selOpts(XML_TIPO_CESION,d.tipo_cesion||'1')}</select></div>
+  ${xmlHPersona('xp-cedente',d.cedente||{},'Cedente')}
+  ${xmlHPersona('xp-cesionario',d.cesionario||{},'Cesionario')}
+  <div class="fg" style="margin:8px 0"><label>Monto de la cesión</label><input id="xp-monto-cesion" type="number" value="${d.monto_cesion||''}" placeholder="1000000.00" style="width:200px"></div>`;
+}
+
+// ── 9. Contrato mutuo / crédito ────────────────────────────────
+function xmlF_Mutuo(d){
+  return `
+  <div class="alert alert-warn" style="margin-bottom:10px">⚠️ <b>SIEMPRE AVISO</b> — Inciso e) — Acreedor no pertenece al sistema financiero.</div>
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>Tipo de otorgamiento</label><select id="xp-tipo-otorg" style="width:100%">${selOpts(XML_TIPO_OTORGAMIENTO,d.tipo_otorg||'2')}</select></div>
+  </div>
+  ${xmlHPersona('xp-acreedor',d.acreedor||{},'Acreedor')}
+  ${xmlHPersona('xp-deudor',d.deudor||{},'Deudor')}
+  <div style="font-weight:600;margin:10px 0 4px">Garantía (opcional)</div>
+  <div class="row3" style="margin-bottom:8px">
+    <div class="fg" style="margin:0"><label>Tipo de garantía</label><select id="xp-tipo-gar" onchange="xmlToggleGarantia()" style="width:100%"><option value="">Sin garantía</option>${selOpts(XML_TIPO_GARANTIA,d.tipo_gar||'')}</select></div>
+  </div>
+  <div id="xp-gar-bloque" style="${d.tipo_gar?'':'display:none'}">
+    <div class="row3" style="margin-bottom:8px">
+      <div class="fg" style="margin:0"><label>Tipo inmueble (si es inmueble)</label><select id="xp-tipo-inm" style="width:100%"><option value="1"${d.tipo_inm==='1'?' selected':''}>1 - Casa habitación</option><option value="2"${d.tipo_inm==='2'?' selected':''}>2 - Local comercial</option><option value="3"${d.tipo_inm==='3'?' selected':''}>3 - Terreno</option><option value="4"${d.tipo_inm==='4'?' selected':''}>4 - Bodega</option><option value="99"${d.tipo_inm==='99'?' selected':''}>99 - Otro</option></select></div>
+      <div class="fg" style="margin:0"><label>Valor de referencia</label><input id="xp-val-ref" type="number" value="${d.val_ref||''}" style="width:100%"></div>
+      <div class="fg" style="margin:0"><label>Código Postal (5 dígitos)</label><input id="xp-cp" value="${d.cp||''}" maxlength="5" style="width:100%"></div>
+    </div>
+    <div class="fg" style="margin:0 0 8px"><label>Folio Real</label><input id="xp-folio-real" value="${es(d.folio_real||'')}" style="text-transform:uppercase;width:100%"></div>
+    <div class="fg" style="margin:0 0 8px"><label>Descripción (si garantía=otro)</label><input id="xp-desc-gar" value="${es(d.desc_gar||'')}" style="text-transform:uppercase;width:100%"></div>
+    ${xmlHPersona('xp-garante',d.garante||{},'Garante (opcional)')}
+  </div>
+  <div style="font-weight:600;margin:10px 0 4px">Datos de Liquidación</div>
+  <div class="row3">
+    <div class="fg" style="margin:0"><label>Moneda</label><select id="xp-moneda" style="width:100%">${selOpts(XML_MONEDA,d.moneda||'1')}</select></div>
+    <div class="fg" style="margin:0"><label>Monto de la operación</label><input id="xp-monto" type="number" value="${d.monto||''}" placeholder="10000000.00" style="width:100%"></div>
+  </div>`;
+}
+function xmlToggleGarantia(){
+  const v=document.getElementById('xp-tipo-gar')?.value;
+  const b=document.getElementById('xp-gar-bloque');
+  if(b)b.style.display=v?'':'none';
+}
+
+// ── 10. Avalúo ─────────────────────────────────────────────────
+function xmlF_Avaluo(d){
+  return `
+  <div class="row3" style="margin-bottom:10px">
+    <div class="fg" style="margin:0"><label>Tipo de bien</label><select id="xp-tipo-bien" style="width:100%">${selOpts(XML_TIPO_BIEN,d.tipo_bien||'1')}</select></div>
+    <div class="fg" style="margin:0"><label>Valor del avalúo</label><input id="xp-val-avaluo" type="number" value="${d.val_avaluo||''}" style="width:100%"></div>
+    <div class="fg" style="margin:0"><label>Descripción (opcional)</label><input id="xp-desc" value="${es(d.desc||'')}" style="text-transform:uppercase;width:100%"></div>
+  </div>
+  <div class="fg" style="margin:0 0 10px"><label>¿El propietario solicita el avalúo?</label><select id="xp-prop-sol" style="width:220px"><option value="NO">NO</option><option value="SI"${d.prop_sol==='SI'?' selected':''}>SI</option></select></div>
+  ${xmlHPersona('xp-propietario',d.propietario||{},'Propietario')}`;
+}
+
+// ── Guardar operación del modal ────────────────────────────────
+function xmlGuardarOp(){
+  const instr=xmlSanitize(document.getElementById('xop-instrumento')?.value);
+  const fecha=xmlFecha(document.getElementById('xop-fecha')?.value);
+  const tipo=document.getElementById('xop-tipo')?.value;
+  if(!instr||!fecha||!tipo){alert('Completa: N° instrumento, fecha y tipo de actividad.');return;}
+  const datos=xmlLeerDatos(tipo);
+  const op={instrumento:instr,fecha_op:document.getElementById('xop-fecha')?.value,tipo_act:tipo,datos};
+  if(xmlOpEditIdx!==null){xmlOps[xmlOpEditIdx]=op;}else{xmlOps.push(op);}
+  xmlRenderOps();
+  closeM('modal-xml-op');
+}
+
+function xmlLeerDatos(tipo){
+  switch(tipo){
+    case 'otorgamiento_poder': return {
+      poderdante:xmlLeerPersona('xp-poderdante'),
+      tipo_poder:document.getElementById('xp-tipo-poder')?.value,
+      apoderado:xmlLeerPersona('xp-apoderado')};
+    case 'constitucion_personas_morales': return {
+      tipo_pm:document.getElementById('xp-tipo-pm')?.value,
+      razon:xmlSanitize(document.getElementById('xp-razon')?.value),
+      giro:document.getElementById('xp-giro')?.value,
+      folio_m:xmlSanitize(document.getElementById('xp-folio-m')?.value),
+      num_acc:document.getElementById('xp-num-acc')?.value,
+      ef:document.getElementById('xp-ef')?.value,
+      consejo:document.getElementById('xp-consejo')?.value,
+      motivo:document.getElementById('xp-motivo')?.value,
+      cap_fijo:document.getElementById('xp-cap-fijo')?.value,
+      cap_var:document.getElementById('xp-cap-var')?.value,
+      acc1:xmlLeerPersona('xp-acc1'),
+      acc1_cargo:document.getElementById('xp-acc1-cargo')?.value,
+      acc1_nacc:document.getElementById('xp-acc1-nacc')?.value};
+    case 'modificacion_patrimonial': return {
+      razon:xmlSanitize(document.getElementById('xp-razon')?.value),
+      rfc:document.getElementById('xp-rfc')?.value.toUpperCase(),
+      fcons:xmlFecha(document.getElementById('xp-fcons')?.value),
+      pais:document.getElementById('xp-pais')?.value.toUpperCase()||'MX',
+      giro:document.getElementById('xp-giro')?.value,
+      num_acc:document.getElementById('xp-num-acc')?.value,
+      motivo:document.getElementById('xp-motivo')?.value,
+      mod_cfijo:document.getElementById('xp-mod-cfijo')?.value,
+      cfijo_ini:document.getElementById('xp-cfijo-ini')?.value,
+      cfijo_fin:document.getElementById('xp-cfijo-fin')?.value,
+      mod_cvar:document.getElementById('xp-mod-cvar')?.value,
+      cvar_ini:document.getElementById('xp-cvar-ini')?.value,
+      cvar_fin:document.getElementById('xp-cvar-fin')?.value,
+      acc1:xmlLeerPersona('xp-acc1'),
+      acc1_nacc:document.getElementById('xp-acc1-nacc')?.value};
+    case 'fusion': return {
+      tipo_fusion:document.getElementById('xp-tipo-fusion')?.value,
+      fus_razon:xmlSanitize(document.getElementById('xp-fus-razon')?.value),
+      fus_rfc:document.getElementById('xp-fus-rfc')?.value.toUpperCase(),
+      fus_fcons:xmlFecha(document.getElementById('xp-fus-fcons')?.value),
+      fus_pais:document.getElementById('xp-fus-pais')?.value.toUpperCase()||'MX',
+      fus_giro:document.getElementById('xp-fus-giro')?.value,
+      fus_cap:document.getElementById('xp-fus-cap')?.value,
+      fusante_det:document.getElementById('xp-fusante-det')?.value,
+      fusante_razon:xmlSanitize(document.getElementById('xp-fusante-razon')?.value),
+      fusante_rfc:document.getElementById('xp-fusante-rfc')?.value?.toUpperCase(),
+      fusante_pais:document.getElementById('xp-fusante-pais')?.value?.toUpperCase()||'MX',
+      fusante_giro:document.getElementById('xp-fusante-giro')?.value,
+      fusante_cap:document.getElementById('xp-fusante-cap')?.value,
+      fusante_nacc:document.getElementById('xp-fusante-nacc')?.value,
+      fusante_acc:xmlLeerPersona('xp-fusante-acc'),
+      fusante_acc_nacc:document.getElementById('xp-fusante-acc-nacc')?.value};
+    case 'escision': return {
+      esc_razon:xmlSanitize(document.getElementById('xp-esc-razon')?.value),
+      esc_rfc:document.getElementById('xp-esc-rfc')?.value.toUpperCase(),
+      esc_fcons:xmlFecha(document.getElementById('xp-esc-fcons')?.value),
+      esc_pais:document.getElementById('xp-esc-pais')?.value.toUpperCase()||'MX',
+      esc_giro:document.getElementById('xp-esc-giro')?.value,
+      esc_cap:document.getElementById('xp-esc-cap')?.value,
+      esc_subsiste:document.getElementById('xp-esc-subsiste')?.value,
+      escindidas_det:document.getElementById('xp-escindidas-det')?.value,
+      escindida_razon:xmlSanitize(document.getElementById('xp-escindida-razon')?.value),
+      escindida_rfc:document.getElementById('xp-escindida-rfc')?.value?.toUpperCase(),
+      escindida_pais:document.getElementById('xp-escindida-pais')?.value?.toUpperCase()||'MX',
+      escindida_giro:document.getElementById('xp-escindida-giro')?.value,
+      escindida_cap:document.getElementById('xp-escindida-cap')?.value,
+      escindida_nacc:document.getElementById('xp-escindida-nacc')?.value,
+      escindida_acc:xmlLeerPersona('xp-escindida-acc'),
+      escindida_acc_nacc:document.getElementById('xp-escindida-acc-nacc')?.value};
+    case 'compra_venta_acciones': return {
+      tipo_op:document.getElementById('xp-tipo-op')?.value,
+      pm_razon:xmlSanitize(document.getElementById('xp-pm-razon')?.value),
+      pm_rfc:document.getElementById('xp-pm-rfc')?.value?.toUpperCase(),
+      pm_pais:document.getElementById('xp-pm-pais')?.value?.toUpperCase()||'MX',
+      pm_val_nom:document.getElementById('xp-pm-val-nom')?.value,
+      pm_nacc:document.getElementById('xp-pm-nacc')?.value,
+      vendedor:xmlLeerPersona('xp-vendedor'),
+      nacc_vend:document.getElementById('xp-nacc-vend')?.value,
+      comprador:xmlLeerPersona('xp-comprador'),
+      nacc_comp:document.getElementById('xp-nacc-comp')?.value,
+      fecha_pago:xmlFecha(document.getElementById('xp-fecha-pago')?.value),
+      instr_mon:document.getElementById('xp-instr-mon')?.value,
+      moneda:document.getElementById('xp-moneda')?.value,
+      monto:document.getElementById('xp-monto')?.value};
+    case 'constitucion_modificacion_fideicomiso': return {
+      tipo_mov:document.getElementById('xp-tipo-mov')?.value,
+      tipo_fid:document.getElementById('xp-tipo-fid')?.value,
+      idfid:xmlSanitize(document.getElementById('xp-idfid')?.value),
+      fid_razon:xmlSanitize(document.getElementById('xp-fid-razon')?.value),
+      fid_rfc:document.getElementById('xp-fid-rfc')?.value?.toUpperCase(),
+      monto_pat:document.getElementById('xp-monto-pat')?.value,
+      desc:xmlSanitize(document.getElementById('xp-desc')?.value),
+      fideicomitente:xmlLeerPersona('xp-fideicomitente'),
+      mov_fideit:document.getElementById('xp-mov-fideit')?.value,
+      tipo_pat:document.getElementById('xp-tipo-pat')?.value,
+      moneda:document.getElementById('xp-moneda')?.value,
+      monto_aport:document.getElementById('xp-monto-aport')?.value,
+      fid_det:document.getElementById('xp-fid-det')?.value,
+      fideicomisario:xmlLeerPersona('xp-fideicomisario'),
+      comite:document.getElementById('xp-comite')?.value,
+      mod_comite:document.getElementById('xp-mod-comite')?.value};
+    case 'cesion_derechos_fideicomitente_fideicomisario': return {
+      idfid:xmlSanitize(document.getElementById('xp-idfid')?.value),
+      fid_rfc:document.getElementById('xp-fid-rfc')?.value?.toUpperCase(),
+      fid_razon:xmlSanitize(document.getElementById('xp-fid-razon')?.value),
+      tipo_cesion:document.getElementById('xp-tipo-cesion')?.value,
+      cedente:xmlLeerPersona('xp-cedente'),
+      cesionario:xmlLeerPersona('xp-cesionario'),
+      monto_cesion:document.getElementById('xp-monto-cesion')?.value};
+    case 'contrato_mutuo_credito': return {
+      tipo_otorg:document.getElementById('xp-tipo-otorg')?.value,
+      acreedor:xmlLeerPersona('xp-acreedor'),
+      deudor:xmlLeerPersona('xp-deudor'),
+      tipo_gar:document.getElementById('xp-tipo-gar')?.value,
+      tipo_inm:document.getElementById('xp-tipo-inm')?.value,
+      val_ref:document.getElementById('xp-val-ref')?.value,
+      cp:document.getElementById('xp-cp')?.value,
+      folio_real:xmlSanitize(document.getElementById('xp-folio-real')?.value),
+      desc_gar:xmlSanitize(document.getElementById('xp-desc-gar')?.value),
+      garante:xmlLeerPersona('xp-garante'),
+      moneda:document.getElementById('xp-moneda')?.value,
+      monto:document.getElementById('xp-monto')?.value};
+    case 'avaluo': return {
+      tipo_bien:document.getElementById('xp-tipo-bien')?.value,
+      val_avaluo:document.getElementById('xp-val-avaluo')?.value,
+      desc:xmlSanitize(document.getElementById('xp-desc')?.value),
+      prop_sol:document.getElementById('xp-prop-sol')?.value,
+      propietario:xmlLeerPersona('xp-propietario')};
+    default: return {};
+  }
+}
+
+// ── Precargar desde escrituras del mes ─────────────────────────
+function xmlPrecargarDeEscs(){
+  const mes=document.getElementById('xml-mes').value;
+  if(!mes){alert('Selecciona primero el mes reportado.');return;}
+  const [anio,mm]=mes.split('-');
+  const escs=getEscs().filter(e=>{
+    if(!e.fecha)return false;
+    const [ea,em]=e.fecha.split('-');
+    return ea===anio&&em===mm&&(e.tipo==='inmueble'||e.tipo==='pm'||e.tipo==='siempre');
+  });
+  if(!escs.length){alert('No hay escrituras vulnerables en el mes seleccionado para esta notaría.');return;}
+  let cargadas=0;
+  escs.forEach(e=>{
+    const tipoXML=NAT_A_XML[e.naturaleza]||'contrato_mutuo_credito';
+    const pA0=e.pA?.personas?.[0]||{};
+    const pB0=e.pB?.personas?.[0]||{};
+    const partes_a={tipo_persona:'fisica',nombre:xmlSanitize(pA0.nombre?.split(' ')[0]||''),
+      pat:xmlSanitize(pA0.nombre?.split(' ')[1]||'XXXX'),mat:xmlSanitize(pA0.nombre?.split(' ')[2]||'XXXX'),
+      rfc:pA0.rfc?.toUpperCase()||'',pais:'MX',acteco:'',fnac:'',curp:''};
+    const partes_b={tipo_persona:'fisica',nombre:xmlSanitize(pB0.nombre?.split(' ')[0]||''),
+      pat:xmlSanitize(pB0.nombre?.split(' ')[1]||'XXXX'),mat:xmlSanitize(pB0.nombre?.split(' ')[2]||'XXXX'),
+      rfc:pB0.rfc?.toUpperCase()||'',pais:'MX',acteco:'',fnac:'',curp:''};
+    let datos={};
+    if(tipoXML==='otorgamiento_poder'){datos={poderdante:partes_b,tipo_poder:'2',apoderado:partes_a};}
+    else if(tipoXML==='contrato_mutuo_credito'){datos={tipo_otorg:'2',acreedor:partes_b,deudor:partes_a,moneda:'1',monto:e.monto||''};}
+    else if(tipoXML==='constitucion_personas_morales'){datos={razon:xmlSanitize(e.obs||'NUEVA EMPRESA'),giro:'0000000',tipo_pm:'1',num_acc:'100.00',ef:'',consejo:'NO',motivo:'3',cap_fijo:e.monto||'0',acc1:partes_a,acc1_cargo:'1',acc1_nacc:'100.00'};}
+    else if(tipoXML==='constitucion_modificacion_fideicomiso'){datos={tipo_mov:'1',tipo_fid:'1',fid_razon:'FIDEICOMISO',monto_pat:e.monto||'',fideicomitente:partes_b,mov_fideit:'1',tipo_pat:'monetario',moneda:'1',monto_aport:e.monto||'',fid_det:'SI',fideicomisario:partes_a,comite:'NO',mod_comite:'NO'};}
+    else{datos={acreedor:partes_b,deudor:partes_a,moneda:'1',monto:e.monto||'',tipo_otorg:'2'};}
+    xmlOps.push({instrumento:String(e.num),fecha_op:e.fecha,tipo_act:tipoXML,datos});
+    cargadas++;
+  });
+  xmlRenderOps();
+  alert(`✅ ${cargadas} operación(es) precargada(s). Revisa y completa los datos faltantes antes de generar.`);
+}
+
+// ── Generador XML ──────────────────────────────────────────────
+function xmlPersonaXML(p,indent='        '){
+  if(!p)return'';
+  const i=indent;
+  if(p.tipo_persona==='fisica') return `
+${i}<persona_fisica>
+${p.nombre?`${i}  <nombre>${p.nombre}</nombre>\n`:''}${p.pat?`${i}  <apellido_paterno>${p.pat}</apellido_paterno>\n`:''}${p.mat?`${i}  <apellido_materno>${p.mat||'XXXX'}</apellido_materno>\n`:''}${p.fnac?`${i}  <fecha_nacimiento>${p.fnac}</fecha_nacimiento>\n`:''}${p.rfc?`${i}  <rfc>${p.rfc}</rfc>\n`:''}${p.curp?`${i}  <curp>${p.curp}</curp>\n`:''}${p.pais?`${i}  <pais_nacionalidad>${p.pais}</pais_nacionalidad>\n`:''}${p.acteco?`${i}  <actividad_economica>${p.acteco}</actividad_economica>\n`:''}${i}</persona_fisica>`;
+  if(p.tipo_persona==='moral') return `
+${i}<persona_moral>
+${p.razon?`${i}  <denominacion_razon>${p.razon}</denominacion_razon>\n`:''}${p.fcons?`${i}  <fecha_constitucion>${p.fcons}</fecha_constitucion>\n`:''}${p.rfc?`${i}  <rfc>${p.rfc}</rfc>\n`:''}${p.pais?`${i}  <pais_nacionalidad>${p.pais}</pais_nacionalidad>\n`:''}${p.giro?`${i}  <giro_mercantil>${p.giro}</giro_mercantil>\n`:''}${i}</persona_moral>`;
+  // fideicomiso
+  return `
+${i}<fideicomiso>
+${p.razon?`${i}  <denominacion_razon>${p.razon}</denominacion_razon>\n`:''}${p.rfc?`${i}  <rfc>${p.rfc}</rfc>\n`:''}${p.idfid?`${i}  <identificador_fideicomiso>${p.idfid}</identificador_fideicomiso>\n`:''}${i}</fideicomiso>`;
+}
+
+function xmlTipoActividadXML(op){
+  const d=op.datos||{};
+  switch(op.tipo_act){
+    case 'otorgamiento_poder': return `
+          <otorgamiento_poder>
+            <datos_poderdante>
+              <tipo_persona>${xmlPersonaXML(d.poderdante,'              ')}\n              </tipo_persona>
+            </datos_poderdante>
+            <datos_apoderado>
+              <tipo_poder>${d.tipo_poder||'2'}</tipo_poder>
+              <tipo_persona>${xmlPersonaXML(d.apoderado,'              ')}\n              </tipo_persona>
+            </datos_apoderado>
+          </otorgamiento_poder>`;
+
+    case 'constitucion_personas_morales': return `
+          <constitucion_personas_morales>
+            <tipo_persona_moral>${d.tipo_pm||'1'}</tipo_persona_moral>
+            <denominacion_razon>${d.razon||''}</denominacion_razon>
+            <giro_mercantil>${d.giro||'0000000'}</giro_mercantil>
+            ${d.folio_m?`<folio_mercantil>${d.folio_m}</folio_mercantil>`:''}
+            <numero_total_acciones>${xmlMonto(d.num_acc||0)}</numero_total_acciones>
+            ${d.ef?`<entidad_federativa>${d.ef}</entidad_federativa>`:''}
+            <consejo_vigilancia>${d.consejo||'NO'}</consejo_vigilancia>
+            <motivo_constitucion>${d.motivo||'3'}</motivo_constitucion>
+            <datos_accionista>
+              <cargo_accionista>${d.acc1_cargo||'1'}</cargo_accionista>
+              <tipo_persona>${xmlPersonaXML(d.acc1,'              ')}\n              </tipo_persona>
+              <numero_acciones>${xmlMonto(d.acc1_nacc||0)}</numero_acciones>
+            </datos_accionista>
+            <capital_social>
+              <capital_fijo>${xmlMonto(d.cap_fijo||0)}</capital_fijo>
+              ${d.cap_var?`<capital_variable>${xmlMonto(d.cap_var)}</capital_variable>`:''}
+            </capital_social>
+          </constitucion_personas_morales>`;
+
+    case 'modificacion_patrimonial': return `
+          <modificacion_patrimonial>
+            <persona_moral_modifica>
+              <denominacion_razon>${d.razon||''}</denominacion_razon>
+              ${d.fcons?`<fecha_constitucion>${d.fcons}</fecha_constitucion>`:''}
+              ${d.rfc?`<rfc>${d.rfc}</rfc>`:''}
+              <pais_nacionalidad>${d.pais||'MX'}</pais_nacionalidad>
+              <giro_mercantil>${d.giro||'0000000'}</giro_mercantil>
+              <numero_total_acciones>${xmlMonto(d.num_acc||0)}</numero_total_acciones>
+              <motivo_modificacion>${d.motivo||'3'}</motivo_modificacion>
+            </persona_moral_modifica>
+            <datos_modificacion>
+              <tipo_modificacion_capital_fijo>${d.mod_cfijo||'1'}</tipo_modificacion_capital_fijo>
+              <inicial_capital_fijo>${xmlMonto(d.cfijo_ini||0)}</inicial_capital_fijo>
+              <final_capital_fijo>${xmlMonto(d.cfijo_fin||0)}</final_capital_fijo>
+              <tipo_modificacion_capital_variable>${d.mod_cvar||'3'}</tipo_modificacion_capital_variable>
+              <inicial_capital_variable>${xmlMonto(d.cvar_ini||0)}</inicial_capital_variable>
+              <final_capital_variable>${xmlMonto(d.cvar_fin||0)}</final_capital_variable>
+              <datos_accionista>
+                <tipo_persona>${xmlPersonaXML(d.acc1,'                ')}\n                </tipo_persona>
+                <numero_acciones>${xmlMonto(d.acc1_nacc||0)}</numero_acciones>
+              </datos_accionista>
+            </datos_modificacion>
+          </modificacion_patrimonial>`;
+
+    case 'fusion': return `
+          <fusion>
+            <tipo_fusion>${d.tipo_fusion||'1'}</tipo_fusion>
+            <datos_fusionadas>
+              <datos_fusionada>
+                <denominacion_razon>${d.fus_razon||''}</denominacion_razon>
+                ${d.fus_fcons?`<fecha_constitucion>${d.fus_fcons}</fecha_constitucion>`:''}
+                ${d.fus_rfc?`<rfc>${d.fus_rfc}</rfc>`:''}
+                <pais_nacionalidad>${d.fus_pais||'MX'}</pais_nacionalidad>
+                <giro_mercantil>${d.fus_giro||'0000000'}</giro_mercantil>
+                <capital_social_fijo>${xmlMonto(d.fus_cap||0)}</capital_social_fijo>
+              </datos_fusionada>
+            </datos_fusionadas>
+            <datos_fusionante>
+              <fusionante_determinadas>${d.fusante_det||'SI'}</fusionante_determinadas>
+              ${d.fusante_det!=='NO'?`<fusionante>
+                <denominacion_razon>${d.fusante_razon||''}</denominacion_razon>
+                ${d.fusante_rfc?`<rfc>${d.fusante_rfc}</rfc>`:''}
+                <pais_nacionalidad>${d.fusante_pais||'MX'}</pais_nacionalidad>
+                <giro_mercantil>${d.fusante_giro||'0000000'}</giro_mercantil>
+                <capital_social_fijo>${xmlMonto(d.fusante_cap||0)}</capital_social_fijo>
+                <numero_total_acciones>${xmlMonto(d.fusante_nacc||0)}</numero_total_acciones>
+                <datos_accionista>
+                  <tipo_persona>${xmlPersonaXML(d.fusante_acc,'                  ')}\n                  </tipo_persona>
+                  <numero_acciones>${xmlMonto(d.fusante_acc_nacc||0)}</numero_acciones>
+                </datos_accionista>
+              </fusionante>`:''}
+            </datos_fusionante>
+          </fusion>`;
+
+    case 'escision': return `
+          <escision>
+            <datos_escindente>
+              <denominacion_razon>${d.esc_razon||''}</denominacion_razon>
+              ${d.esc_fcons?`<fecha_constitucion>${d.esc_fcons}</fecha_constitucion>`:''}
+              ${d.esc_rfc?`<rfc>${d.esc_rfc}</rfc>`:''}
+              <pais_nacionalidad>${d.esc_pais||'MX'}</pais_nacionalidad>
+              <giro_mercantil>${d.esc_giro||'0000000'}</giro_mercantil>
+              <capital_social_fijo>${xmlMonto(d.esc_cap||0)}</capital_social_fijo>
+              <escindente_subsiste>${d.esc_subsiste||'SI'}</escindente_subsiste>
+            </datos_escindente>
+            <datos_escindidas>
+              <escindidas_determinadas>${d.escindidas_det||'SI'}</escindidas_determinadas>
+              ${d.escindidas_det!=='NO'?`<dato_escindida>
+                <denominacion_razon>${d.escindida_razon||''}</denominacion_razon>
+                ${d.escindida_rfc?`<rfc>${d.escindida_rfc}</rfc>`:''}
+                <pais_nacionalidad>${d.escindida_pais||'MX'}</pais_nacionalidad>
+                <giro_mercantil>${d.escindida_giro||'0000000'}</giro_mercantil>
+                <capital_social_fijo>${xmlMonto(d.escindida_cap||0)}</capital_social_fijo>
+                <numero_total_acciones>${xmlMonto(d.escindida_nacc||0)}</numero_total_acciones>
+                <datos_accionista>
+                  <tipo_persona>${xmlPersonaXML(d.escindida_acc,'                  ')}\n                  </tipo_persona>
+                  <numero_acciones>${xmlMonto(d.escindida_acc_nacc||0)}</numero_acciones>
+                </datos_accionista>
+              </dato_escindida>`:''}
+            </datos_escindidas>
+          </escision>`;
+
+    case 'compra_venta_acciones': return `
+          <compra_venta_acciones>
+            <tipo_operacion>${d.tipo_op||'1'}</tipo_operacion>
+            <persona_moral_acciones>
+              <denominacion_razon>${d.pm_razon||''}</denominacion_razon>
+              ${d.pm_rfc?`<rfc>${d.pm_rfc}</rfc>`:''}
+              <pais_nacionalidad>${d.pm_pais||'MX'}</pais_nacionalidad>
+              <valor_nominal>${xmlMonto(d.pm_val_nom||0)}</valor_nominal>
+              <numero_acciones>${xmlMonto(d.pm_nacc||0)}</numero_acciones>
+              <datos_vendedor>
+                <numero_acciones_vendidas>${xmlMonto(d.nacc_vend||0)}</numero_acciones_vendidas>
+                <tipo_persona>${xmlPersonaXML(d.vendedor,'                ')}\n                </tipo_persona>
+              </datos_vendedor>
+              <datos_comprador>
+                <numero_acciones_compradas>${xmlMonto(d.nacc_comp||0)}</numero_acciones_compradas>
+                <tipo_persona>${xmlPersonaXML(d.comprador,'                ')}\n                </tipo_persona>
+              </datos_comprador>
+            </persona_moral_acciones>
+            <datos_liquidacion>
+              <fecha_pago>${d.fecha_pago||''}</fecha_pago>
+              <instrumento_monetario>${d.instr_mon||'1'}</instrumento_monetario>
+              <moneda>${d.moneda||'1'}</moneda>
+              <monto_operacion>${xmlMonto(d.monto||0)}</monto_operacion>
+            </datos_liquidacion>
+          </compra_venta_acciones>`;
+
+    case 'constitucion_modificacion_fideicomiso': return `
+          <constitucion_modificacion_fideicomiso>
+            <tipo_movimiento>${d.tipo_mov||'1'}</tipo_movimiento>
+            <tipo_fideicomiso>${d.tipo_fid||'1'}</tipo_fideicomiso>
+            ${d.desc?`<descripcion>${d.desc}</descripcion>`:''}
+            ${d.fid_rfc?`<rfc>${d.fid_rfc}</rfc>`:''}
+            ${d.idfid?`<identificador_fideicomiso>${d.idfid}</identificador_fideicomiso>`:''}
+            <denominacion_razon>${d.fid_razon||'FIDEICOMISO'}</denominacion_razon>
+            <monto_patrimonio>${xmlMonto(d.monto_pat||0)}</monto_patrimonio>
+            <datos_fideicomitente>
+              <tipo_movimiento_fideicomitente>${d.mov_fideit||'1'}</tipo_movimiento_fideicomitente>
+              <tipo_persona>${xmlPersonaXML(d.fideicomitente,'              ')}\n              </tipo_persona>
+              <datos_tipo_patrimonio>
+                ${d.tipo_pat==='inmueble'?`<patrimonio_inmueble><tipo_inmueble>1</tipo_inmueble><codigo_postal>00000</codigo_postal><folio_real>0</folio_real><importe_garantia>${xmlMonto(d.monto_aport||0)}</importe_garantia></patrimonio_inmueble>`:
+                  d.tipo_pat==='otro'?`<patrimonio_otro_bien><descripcion>${d.desc||'BIEN'}</descripcion><valor_bien>${xmlMonto(d.monto_aport||0)}</valor_bien></patrimonio_otro_bien>`:
+                  `<patrimonio_monetario><moneda>${d.moneda||'1'}</moneda><monto_operacion>${xmlMonto(d.monto_aport||0)}</monto_operacion></patrimonio_monetario>`}
+              </datos_tipo_patrimonio>
+            </datos_fideicomitente>
+            <datos_fideicomisarios>
+              <datos_fideicomisarios_determinados>${d.fid_det||'SI'}</datos_fideicomisarios_determinados>
+              ${d.fid_det!=='NO'?`<tipo_persona>
+                <tipo_movimiento_fideicomisario>1</tipo_movimiento_fideicomisario>
+                ${xmlPersonaXML(d.fideicomisario,'                ')}
+              </tipo_persona>`:''}
+            </datos_fideicomisarios>
+            <datos_miembro_comite_tecnico>
+              <comite_tecnico>${d.comite||'NO'}</comite_tecnico>
+              <modificacion_comite_tecnico>${d.mod_comite||'NO'}</modificacion_comite_tecnico>
+            </datos_miembro_comite_tecnico>
+          </constitucion_modificacion_fideicomiso>`;
+
+    case 'cesion_derechos_fideicomitente_fideicomisario': return `
+          <cesion_derechos_fideicomitente_fideicomisario>
+            ${d.idfid?`<identificador_fideicomiso>${d.idfid}</identificador_fideicomiso>`:''}
+            ${d.fid_rfc?`<rfc>${d.fid_rfc}</rfc>`:''}
+            <denominacion_razon>${d.fid_razon||'FIDEICOMISO'}</denominacion_razon>
+            <tipo_cesion>${d.tipo_cesion||'1'}</tipo_cesion>
+            <datos_cedente>
+              <tipo_persona>${xmlPersonaXML(d.cedente,'              ')}\n              </tipo_persona>
+            </datos_cedente>
+            <datos_cesionario>
+              <tipo_persona>${xmlPersonaXML(d.cesionario,'              ')}\n              </tipo_persona>
+            </datos_cesionario>
+            <datos_cesion>
+              <monto_cesion>${xmlMonto(d.monto_cesion||0)}</monto_cesion>
+            </datos_cesion>
+          </cesion_derechos_fideicomitente_fideicomisario>`;
+
+    case 'contrato_mutuo_credito': return `
+          <contrato_mutuo_credito>
+            <tipo_otorgamiento>${d.tipo_otorg||'2'}</tipo_otorgamiento>
+            <datos_acreedor>
+              <tipo_persona>${xmlPersonaXML(d.acreedor,'              ')}\n              </tipo_persona>
+            </datos_acreedor>
+            <datos_deudor>
+              <tipo_persona>${xmlPersonaXML(d.deudor,'              ')}\n              </tipo_persona>
+            </datos_deudor>
+            ${d.tipo_gar?`<datos_garantia>
+              <tipo_garantia>${d.tipo_gar}</tipo_garantia>
+              ${d.tipo_gar==='2'?`<datos_bien_mutuo>
+                <datos_inmueble>
+                  <tipo_inmueble>${d.tipo_inm||'1'}</tipo_inmueble>
+                  <valor_referencia>${xmlMonto(d.val_ref||0)}</valor_referencia>
+                  <codigo_postal>${d.cp||'00000'}</codigo_postal>
+                  <folio_real>${d.folio_real||'0'}</folio_real>
+                </datos_inmueble>
+              </datos_bien_mutuo>`:d.tipo_gar==='99'?`<datos_bien_mutuo>
+                <datos_otro>
+                  <descripcion_garantia>${d.desc_gar||'GARANTIA'}</descripcion_garantia>
+                </datos_otro>
+              </datos_bien_mutuo>`:''}
+              ${d.garante?`<tipo_persona>${xmlPersonaXML(d.garante,'              ')}\n              </tipo_persona>`:''}
+            </datos_garantia>`:''}
+            <datos_liquidacion>
+              <moneda>${d.moneda||'1'}</moneda>
+              <monto_operacion>${xmlMonto(d.monto||0)}</monto_operacion>
+            </datos_liquidacion>
+          </contrato_mutuo_credito>`;
+
+    case 'avaluo': return `
+          <avaluo>
+            <tipo_bien>${d.tipo_bien||'1'}</tipo_bien>
+            ${d.desc?`<descripcion>${d.desc}</descripcion>`:''}
+            <valor_avaluo>${xmlMonto(d.val_avaluo||0)}</valor_avaluo>
+            <datos_propietario>
+              <propietario_solicita>${d.prop_sol||'NO'}</propietario_solicita>
+              <tipo_persona>${xmlPersonaXML(d.propietario,'              ')}\n              </tipo_persona>
+            </datos_propietario>
+          </avaluo>`;
+    default: return '';
+  }
+}
+
+function xmlGenerar(){
+  const rfcNot=document.getElementById('xml-rfc-notario').value.toUpperCase().trim();
+  const rfcCol=document.getElementById('xml-rfc-colegiada').value.toUpperCase().trim();
+  const mes=document.getElementById('xml-mes').value.replace('-','');
+  const tipo=document.getElementById('xml-tipo-informe').value;
+  const ref=document.getElementById('xml-referencia').value.toUpperCase().trim();
+  const prio=document.getElementById('xml-prioridad').value;
+  const tipoAlerta=document.getElementById('xml-tipo-alerta').value;
+  const descAlerta=document.getElementById('xml-alerta-desc').value.toUpperCase().trim();
+  const paNom=xmlSanitize(document.getElementById('xml-pa-nombre').value);
+  const paPat=xmlSanitize(document.getElementById('xml-pa-pat').value);
+  const paMat=xmlSanitize(document.getElementById('xml-pa-mat').value)||'XXXX';
+  const paFnac=xmlFecha(document.getElementById('xml-pa-fnac').value);
+  const paRfc=document.getElementById('xml-pa-rfc').value.toUpperCase().trim();
+  const paCurp=document.getElementById('xml-pa-curp').value.toUpperCase().trim();
+  const esMod=document.getElementById('xml-es-mod').checked;
+  const modFolio=document.getElementById('xml-mod-folio').value.trim();
+  const modDesc=xmlSanitize(document.getElementById('xml-mod-desc').value);
+
+  // Validaciones básicas
+  const errs=[];
+  if(!rfcNot)errs.push('RFC del Notario');
+  if(!mes)errs.push('Mes reportado');
+  if(tipo==='avisos'&&!ref)errs.push('Referencia del aviso');
+  if(tipo==='avisos'&&!xmlOps.length)errs.push('Al menos una operación');
+  if(tipo==='avisos'&&(!paNom||!paPat))errs.push('Nombre de persona_aviso');
+  if(tipoAlerta==='9999'&&!descAlerta)errs.push('Descripción de alerta (tipo 9999)');
+  if(esMod&&(!modFolio||!modDesc))errs.push('Folio y descripción del modificatorio');
+  if(errs.length){
+    document.getElementById('xml-validacion').innerHTML=`<div class="alert" style="background:#fff3cd;border:1px solid var(--amarillo);padding:10px;border-radius:6px">⚠️ Campos requeridos: <b>${errs.join(', ')}</b></div>`;
+    document.getElementById('xml-output-bloque').style.display='';
+    document.getElementById('xml-output').textContent='';
+    return;
+  }
+  document.getElementById('xml-validacion').innerHTML='<div style="color:var(--verde);font-weight:600">✅ Validación OK — XML listo para subir al SPPLD</div>';
+
+  // Construir XML
+  let xml=`<?xml version="1.0" encoding="UTF-8"?>
+<archivo xmlns="http://www.uif.shcp.gob.mx/recepcion/fep"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://www.uif.shcp.gob.mx/recepcion/fep fep.xsd">
+  <informe>
+    <mes_reportado>${mes}</mes_reportado>
+    <sujeto_obligado>
+      ${rfcCol?`<clave_entidad_colegiada>${rfcCol}</clave_entidad_colegiada>\n      `:''}
+      <clave_sujeto_obligado>${rfcNot}</clave_sujeto_obligado>
+      <clave_actividad>FEP</clave_actividad>
+    </sujeto_obligado>`;
+
+  if(tipo==='avisos'){
+    xml+=`
+    <aviso>
+      <referencia_aviso>${ref}</referencia_aviso>`;
+    if(esMod&&modFolio&&modDesc) xml+=`
+      <modificatorio>
+        <folio_modificacion>${modFolio}</folio_modificacion>
+        <descripcion_modificacion>${modDesc}</descripcion_modificacion>
+      </modificatorio>`;
+    xml+=`
+      <prioridad>${prio}</prioridad>
+      <alerta>
+        <tipo_alerta>${tipoAlerta}</tipo_alerta>
+        ${tipoAlerta==='9999'&&descAlerta?`<descripcion_alerta>${descAlerta}</descripcion_alerta>`:''}
+      </alerta>
+      <persona_aviso>
+        <nombre>${paNom}</nombre>
+        <apellido_paterno>${paPat}</apellido_paterno>
+        <apellido_materno>${paMat}</apellido_materno>
+        ${paFnac?`<fecha_nacimiento>${paFnac}</fecha_nacimiento>`:''}
+        ${paRfc?`<rfc>${paRfc}</rfc>`:''}
+        ${paCurp?`<curp>${paCurp}</curp>`:''}
+      </persona_aviso>
+      <detalle_operaciones>`;
+    xmlOps.forEach(op=>{
+      xml+=`
+        <datos_operacion>
+          <instrumento_publico>${op.instrumento}</instrumento_publico>
+          <fecha_operacion>${xmlFecha(op.fecha_op)}</fecha_operacion>
+          <tipo_actividad>${xmlTipoActividadXML(op)}
+          </tipo_actividad>
+        </datos_operacion>`;
+    });
+    xml+=`
+      </detalle_operaciones>
+    </aviso>`;
+  }
+  xml+=`
+  </informe>
+</archivo>`;
+
+  document.getElementById('xml-output').textContent=xml;
+  document.getElementById('xml-output-bloque').style.display='';
+  document.getElementById('xml-output-bloque').scrollIntoView({behavior:'smooth'});
+
+  // Guardar referencia en DB avisos
+  if(tipo==='avisos'&&curNot){
+    if(!window.DB.avisos)window.DB.avisos={};
+    window.DB.avisos[ref]={ref,mes,rfc:rfcNot,ops:xmlOps.length,ts:Date.now(),generado:true};
+    saveDB();
+  }
+}
+
+function xmlDescargar(){
+  const xml=document.getElementById('xml-output').textContent;
+  if(!xml){alert('Genera el XML primero.');return;}
+  const mes=document.getElementById('xml-mes').value.replace('-','');
+  const ref=document.getElementById('xml-referencia').value||'aviso';
+  const blob=new Blob([xml],{type:'application/xml'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`FEP_${mes}_${ref}.xml`;
+  a.click();
+}
+
+function xmlCopiar(){
+  const xml=document.getElementById('xml-output').textContent;
+  if(!xml){alert('Genera el XML primero.');return;}
+  navigator.clipboard.writeText(xml).then(()=>{
+    const btn=event.target;btn.textContent='✅ Copiado';
+    setTimeout(()=>btn.textContent='📋 Copiar',2000);
+  });
+}
+
+function xmlLimpiar(){
+  if(!confirm('¿Limpiar todo el formulario XML?'))return;
+  xmlOps=[];xmlOpEditIdx=null;
+  ['xml-mes','xml-rfc-notario','xml-rfc-colegiada','xml-referencia',
+   'xml-pa-nombre','xml-pa-pat','xml-pa-mat','xml-pa-fnac','xml-pa-rfc','xml-pa-curp',
+   'xml-mod-folio','xml-mod-desc'].forEach(id=>{
+    const el=document.getElementById(id);if(el)el.value='';
+  });
+  document.getElementById('xml-es-mod').checked=false;
+  document.getElementById('xml-mod-campos').style.display='none';
+  document.getElementById('xml-output-bloque').style.display='none';
+  document.getElementById('xml-validacion').innerHTML='';
+  xmlRenderOps();
+  xmlInitPage();
+}
 // Esperar a que el módulo Firebase esté listo
 window.addEventListener('load',()=>{
   if(window._loadDB){window._loadDB();}
