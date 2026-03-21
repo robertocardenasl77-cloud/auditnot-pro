@@ -11,8 +11,11 @@
 <!-- Firebase SDK (CDN — sin npm, sin instalación) -->
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, getDocs }
+import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection,
+         getDocs, deleteDoc, writeBatch, query }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
+  from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyApk8vX67I0nxV43CWBm77vkCbkDXTMPBo",
@@ -23,86 +26,320 @@ const firebaseConfig = {
   appId: "1:609960150859:web:45287bf078037ed777cace"
 };
 
-const app = initializeApp(firebaseConfig);
-const db  = getFirestore(app);
+const app      = initializeApp(firebaseConfig);
+const db       = getFirestore(app);
+const auth     = getAuth(app);
+const provider = new GoogleAuthProvider();
 
-// Bandera para evitar que onSnapshot sobreescriba mientras guardamos
+const ADMIN_EMAIL = 'roberto.cardenasl77@gmail.com';
+
 let _saving = false;
+let _currentUser = null;
+let _currentUserData = null;
 
-// ── Guardar en Firestore ──────────────────────────────────────
-async function saveDB(){
-  _saving = true;
-  try{
-    await setDoc(doc(db,'auditnot','main'), window.DB);
-    window._syncStatus('✅ Sincronizado');
-  }catch(e){
-    window._syncStatus('❌ Error al guardar: '+e.message);
-    console.error(e);
-  } finally {
-    // Esperar 5 segundos antes de reactivar el listener (suficiente para 400+ escrituras)
-    setTimeout(()=>{ _saving = false; }, 5000);
-  }
+// ═══════════════════════════════════════════════════════════════
+// NUEVA ARQUITECTURA — SUBCOLECCIONES
+// ─────────────────────────────────────────────────────────────
+// notarias/{notId}                    → metadatos notaría
+// notarias/{notId}/escrituras/{escId} → una escritura por doc
+// expedientes/{notId}_{clienteKey}    → un cliente por doc
+// globals/avisos                      → avisos SAT (doc pequeño)
+// usuarios/{uid}                      → usuarios auth
+// ═══════════════════════════════════════════════════════════════
+
+// ── AUTENTICACIÓN ─────────────────────────────────────────────
+async function loginGoogle(){
+  try{ await signInWithPopup(auth, provider); }
+  catch(e){ console.error(e); window._syncStatus('❌ Error al iniciar sesión'); }
+}
+async function logoutUser(){
+  if(!confirm('¿Cerrar sesión?')) return;
+  await signOut(auth);
 }
 
-// ── Guardar inmediato — sin debounce, para importaciones grandes ──
-async function saveDBImmediate(){
+// ── GESTIÓN DE USUARIOS ───────────────────────────────────────
+async function loadUserData(uid){
+  const snap = await getDoc(doc(db,'usuarios',uid));
+  return snap.exists() ? snap.data() : null;
+}
+async function createUserRequest(user){
+  await setDoc(doc(db,'usuarios',user.uid),{
+    email:user.email, nombre:user.displayName||user.email,
+    foto:user.photoURL||'', rol:'pendiente', aprobado:false, notariaId:'', ts:Date.now()
+  });
+}
+async function approveUser(uid, rol, notariaId=''){
+  await setDoc(doc(db,'usuarios',uid),{ rol, notariaId, aprobado:true },{merge:true});
+  window._renderAdminPanel();
+}
+async function rejectUser(uid){
+  await deleteDoc(doc(db,'usuarios',uid));
+  window._renderAdminPanel();
+}
+async function loadPendingUsers(){
+  const snap = await getDocs(collection(db,'usuarios'));
+  return snap.docs.map(d=>({uid:d.id,...d.data()}));
+}
+
+// ── LISTENER DE AUTH ──────────────────────────────────────────
+onAuthStateChanged(auth, async user=>{
+  if(!user){
+    _currentUser=null; _currentUserData=null;
+    window._showLoginScreen(); return;
+  }
+  _currentUser = user;
+  if(user.email === ADMIN_EMAIL){
+    _currentUserData={email:user.email,nombre:user.displayName,rol:'admin',aprobado:true,notariaId:''};
+    await setDoc(doc(db,'usuarios',user.uid),{
+      email:user.email,nombre:user.displayName||user.email,
+      foto:user.photoURL||'',rol:'admin',aprobado:true,notariaId:'',ts:Date.now()
+    },{merge:true});
+    window._onUserApproved(_currentUserData); return;
+  }
+  let userData = await loadUserData(user.uid);
+  if(!userData){ await createUserRequest(user); userData=await loadUserData(user.uid); }
+  _currentUserData = userData;
+  if(userData.aprobado) window._onUserApproved(userData);
+  else window._showPendingScreen(user);
+});
+
+// ═══════════════════════════════════════════════════════════════
+// GUARDAR — SUBCOLECCIONES
+// Guarda solo la notaría activa y sus escrituras (incremental)
+// ═══════════════════════════════════════════════════════════════
+async function saveDB(){
   _saving = true;
   window._syncStatus('💾 Guardando...');
   try{
-    await setDoc(doc(db,'auditnot','main'), window.DB);
+    await _flushDirtyNotarias();
+    await _flushDirtyExpedientes();
     window._syncStatus('✅ Sincronizado');
-    // Guardar también en localStorage como respaldo
     try{localStorage.setItem('anpro_backup',JSON.stringify(window.DB));}catch(_){}
   }catch(e){
     window._syncStatus('❌ Error al guardar: '+e.message);
     console.error(e);
-  } finally {
-    setTimeout(()=>{ _saving = false; }, 5000);
+  }finally{ setTimeout(()=>{ _saving=false; },3000); }
+}
+
+// Igual que saveDB pero sin debounce (para importaciones)
+async function saveDBImmediate(){
+  _saving = true;
+  window._syncStatus('💾 Guardando...');
+  try{
+    await _flushDirtyNotarias();
+    await _flushDirtyExpedientes();
+    window._syncStatus('✅ Sincronizado');
+    try{localStorage.setItem('anpro_backup',JSON.stringify(window.DB));}catch(_){}
+  }catch(e){
+    window._syncStatus('❌ Error al guardar: '+e.message);
+    console.error(e);
+  }finally{ setTimeout(()=>{ _saving=false; },3000); }
+}
+
+// ── Sets de IDs marcados como "sucios" (necesitan guardarse) ──
+const _dirtyNotarias = new Set();
+const _dirtyExps     = new Set(); // "notId___clienteKey"
+
+async function _flushDirtyNotarias(){
+  if(!_dirtyNotarias.size) return;
+  const ids = [..._dirtyNotarias];
+  _dirtyNotarias.clear();
+
+  for(const notId of ids){
+    const n = window.DB.notarias[notId];
+    if(!n) continue;
+
+    // Guardar metadatos de la notaría (sin escrituras)
+    const meta = { nombre:n.nombre, titular:n.titular||'', estado:n.estado||'', ts:Date.now() };
+    await setDoc(doc(db,'notarias',notId), meta, {merge:true});
+
+    // Guardar escrituras de cada año en subcolección
+    for(const anio of Object.keys(n.years||{})){
+      const escs = n.years[anio].escrituras || [];
+      // Batch de máx 500 ops — escrituras típicas son ~100/año, seguro
+      const batch = writeBatch(db);
+      for(const esc of escs){
+        const ref = doc(db,'notarias',notId,'escrituras',esc.id);
+        batch.set(ref, {...esc, _year: parseInt(anio)});
+      }
+      await batch.commit();
+    }
   }
 }
 
-// ── Cargar desde Firestore y escuchar cambios en tiempo real ──
+async function _flushDirtyExpedientes(){
+  if(!_dirtyExps.size) return;
+  const keys = [..._dirtyExps];
+  _dirtyExps.clear();
+
+  for(const k of keys){
+    const [notId, clienteKey] = k.split('___');
+    const exp = (window.DB.expedientes[notId]||{})[clienteKey];
+    if(!exp) continue;
+    const docId = notId+'___'+clienteKey;
+    await setDoc(doc(db,'expedientes',docId), {notId, clienteKey, ...exp}, {merge:true});
+  }
+}
+
+// ── Guardar avisos (documento único pequeño) ──────────────────
+async function _saveAvisos(){
+  await setDoc(doc(db,'globals','avisos'), window.DB.avisos||{}, {merge:true});
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CARGAR — SUBCOLECCIONES
+// ═══════════════════════════════════════════════════════════════
 async function loadDB(){
   window._syncStatus('⏳ Conectando...');
   try{
-    const snap = await getDoc(doc(db,'auditnot','main'));
-    if(snap.exists()){
-      window.DB = snap.data();
-      if(!window.DB.notarias)  window.DB.notarias={};
-      if(!window.DB.expedientes)window.DB.expedientes={};
-      if(!window.DB.avisos)    window.DB.avisos={};
-    } else {
-      window.DB = {notarias:{}, expedientes:{}, avisos:{}};
-      await setDoc(doc(db,'auditnot','main'), window.DB);
+    window.DB = { notarias:{}, expedientes:{}, avisos:{} };
+
+    // 1. Cargar todas las notarías (metadatos)
+    const notSnap = await getDocs(collection(db,'notarias'));
+    for(const nd of notSnap.docs){
+      const notId = nd.id;
+      const meta  = nd.data();
+      window.DB.notarias[notId] = {
+        nombre:  meta.nombre||'',
+        titular: meta.titular||'',
+        estado:  meta.estado||'',
+        years:   {}
+      };
+
+      // 2. Cargar escrituras de esta notaría
+      const escSnap = await getDocs(collection(db,'notarias',notId,'escrituras'));
+      for(const ed of escSnap.docs){
+        const esc  = ed.data();
+        const anio = esc._year || new Date(esc.fecha||'2020').getFullYear();
+        if(!window.DB.notarias[notId].years[anio])
+          window.DB.notarias[notId].years[anio] = { escrituras:[] };
+        // Guardar sin el campo interno _year
+        const { _year, ...escLimpia } = esc;
+        window.DB.notarias[notId].years[anio].escrituras.push(escLimpia);
+      }
     }
+
+    // 3. Cargar expedientes
+    const expSnap = await getDocs(collection(db,'expedientes'));
+    for(const ed of expSnap.docs){
+      const data = ed.data();
+      const notId      = data.notId;
+      const clienteKey = data.clienteKey;
+      if(!notId||!clienteKey) continue;
+      if(!window.DB.expedientes[notId]) window.DB.expedientes[notId]={};
+      const { notId:_n, clienteKey:_c, ...expData } = data;
+      window.DB.expedientes[notId][clienteKey] = expData;
+    }
+
+    // 4. Cargar avisos
+    const avSnap = await getDoc(doc(db,'globals','avisos'));
+    if(avSnap.exists()) window.DB.avisos = avSnap.data();
+
+    // 5. Si Firestore está vacío, intentar migrar desde auditnot/main
+    if(!notSnap.docs.length){
+      await _migrarDesdeDocumentoUnico();
+    }
+
     window._syncStatus('🟢 Conectado');
+    try{localStorage.setItem('anpro_backup',JSON.stringify(window.DB));}catch(_){}
     window._onDBReady();
 
-    // Escuchar cambios en tiempo real — ignorar si estamos guardando
-    onSnapshot(doc(db,'auditnot','main'), snap=>{
+    // Listener en tiempo real sobre metadatos de notarías
+    onSnapshot(collection(db,'notarias'), snap=>{
       if(_saving) return;
-      if(snap.exists()){
-        window.DB = snap.data();
-        if(!window.DB.notarias)  window.DB.notarias={};
-        if(!window.DB.expedientes)window.DB.expedientes={};
-        if(!window.DB.avisos)    window.DB.avisos={};
-        window._syncStatus('🔄 Actualizado');
-        window._onDBReady();
-      }
+      snap.docChanges().forEach(change=>{
+        const notId = change.doc.id;
+        const meta  = change.doc.data();
+        if(change.type==='removed'){
+          delete window.DB.notarias[notId];
+        } else {
+          if(!window.DB.notarias[notId]) window.DB.notarias[notId]={years:{}};
+          window.DB.notarias[notId].nombre  = meta.nombre||'';
+          window.DB.notarias[notId].titular = meta.titular||'';
+          window.DB.notarias[notId].estado  = meta.estado||'';
+        }
+      });
+      window._syncStatus('🔄 Actualizado');
+      window._onDBReady();
     });
+
   }catch(e){
     window._syncStatus('❌ Sin conexión — '+e.message);
+    console.error(e);
+    // Fallback localStorage
     try{const d=localStorage.getItem('anpro_backup');if(d)window.DB=JSON.parse(d);}catch(_){}
     if(!window.DB)window.DB={notarias:{},expedientes:{},avisos:{}};
     window._onDBReady();
   }
 }
 
-// Exponer funciones al scope global
-window._saveDB = saveDB;
-window._saveDBImmediate = saveDBImmediate;
-window._loadDB = loadDB;
-window._setSaving = (val) => { _saving = val; };
+// ═══════════════════════════════════════════════════════════════
+// MIGRACIÓN AUTOMÁTICA desde auditnot/main (primera vez)
+// ═══════════════════════════════════════════════════════════════
+async function _migrarDesdeDocumentoUnico(){
+  try{
+    window._syncStatus('🔄 Migrando datos al nuevo formato...');
+    const snap = await getDoc(doc(db,'auditnot','main'));
+    if(!snap.exists()) return;
+    const viejo = snap.data();
+    if(!viejo.notarias||!Object.keys(viejo.notarias).length) return;
+
+    // Cargar en window.DB
+    window.DB.notarias    = viejo.notarias    || {};
+    window.DB.expedientes = viejo.expedientes || {};
+    window.DB.avisos      = viejo.avisos      || {};
+
+    // Marcar todo como dirty para que se guarde en subcolecciones
+    for(const notId of Object.keys(window.DB.notarias)) _dirtyNotarias.add(notId);
+    for(const notId of Object.keys(window.DB.expedientes)){
+      for(const ck of Object.keys(window.DB.expedientes[notId]||{}))
+        _dirtyExps.add(notId+'___'+ck);
+    }
+
+    await _flushDirtyNotarias();
+    await _flushDirtyExpedientes();
+    if(Object.keys(window.DB.avisos).length) await _saveAvisos();
+
+    window._syncStatus('✅ Migración completada');
+    console.log('Migración desde auditnot/main completada exitosamente');
+  }catch(e){
+    console.error('Error en migración:', e);
+    window._syncStatus('⚠️ Error en migración: '+e.message);
+  }
+}
+
+// ── Marcar sucios (llamados desde el JS principal) ─────────────
+function markDirty(notId){ _dirtyNotarias.add(notId); }
+function markDirtyExp(notId, clienteKey){ _dirtyExps.add(notId+'___'+clienteKey); }
+
+// ── Guardar UNA notaría completa (para restaurar backup) ──────
+async function saveAllNotarias(){
+  for(const notId of Object.keys(window.DB.notarias||{})) _dirtyNotarias.add(notId);
+  for(const notId of Object.keys(window.DB.expedientes||{})){
+    for(const ck of Object.keys(window.DB.expedientes[notId]||{}))
+      _dirtyExps.add(notId+'___'+ck);
+  }
+  await _flushDirtyNotarias();
+  await _flushDirtyExpedientes();
+  if(Object.keys(window.DB.avisos||{}).length) await _saveAvisos();
+}
+
+// Exponer al scope global
+window._saveDB             = saveDB;
+window._saveDBImmediate    = saveDBImmediate;
+window._loadDB             = loadDB;
+window._setSaving          = (val)=>{ _saving=val; };
+window._markDirty          = markDirty;
+window._markDirtyExp       = markDirtyExp;
+window._saveAllNotarias    = saveAllNotarias;
+window._saveAvisos         = _saveAvisos;
+window._loginGoogle        = loginGoogle;
+window._logoutUser         = logoutUser;
+window._approveUser        = approveUser;
+window._rejectUser         = rejectUser;
+window._loadPendingUsers   = loadPendingUsers;
+window._getCurrentUser     = ()=>_currentUser;
+window._getCurrentUserData = ()=>_currentUserData;
 </script>
 
 <style>
@@ -226,12 +463,45 @@ tr:last-child td{border-bottom:none}
   <div id="loading-msg" class="text-sm">Cargando datos compartidos</div>
 </div>
 
+<!-- ── PANTALLA LOGIN ─────────────────────────────────────── -->
+<div id="screen-login" style="display:none;min-height:100vh;background:var(--bg);display:flex;align-items:center;justify-content:center">
+  <div style="background:var(--card);border-radius:16px;padding:48px 40px;max-width:400px;width:100%;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.08)">
+    <div style="font-size:36px;margin-bottom:8px">🏛️</div>
+    <div style="font-size:24px;font-weight:800;color:var(--azul);margin-bottom:4px">AuditNot Pro</div>
+    <div style="font-size:13px;color:var(--gris);margin-bottom:32px">Sistema de Auditoría Antilavado — LFPIORPI</div>
+    <button onclick="window._loginGoogle()" style="width:100%;padding:14px;background:#fff;border:2px solid var(--borde);border-radius:10px;font-size:15px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:12px;transition:all .2s" onmouseover="this.style.borderColor='var(--azul)'" onmouseout="this.style.borderColor='var(--borde)'">
+      <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" style="width:22px">
+      Iniciar sesión con Google
+    </button>
+    <div style="font-size:11px;color:var(--gris);margin-top:20px">Acceso restringido — Solo usuarios autorizados</div>
+  </div>
+</div>
+
+<!-- ── PANTALLA PENDIENTE ─────────────────────────────────── -->
+<div id="screen-pending" style="display:none;min-height:100vh;background:var(--bg);align-items:center;justify-content:center">
+  <div style="background:var(--card);border-radius:16px;padding:48px 40px;max-width:420px;width:100%;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.08)">
+    <div style="font-size:36px;margin-bottom:12px">⏳</div>
+    <div style="font-size:20px;font-weight:700;color:var(--azul);margin-bottom:8px">Solicitud enviada</div>
+    <div id="pending-email" style="font-size:13px;color:var(--gris);margin-bottom:16px"></div>
+    <div style="font-size:13px;color:var(--gris);margin-bottom:24px">Tu solicitud de acceso está pendiente de aprobación por el administrador. Te notificarán cuando tu cuenta esté activa.</div>
+    <button onclick="window._logoutUser()" style="padding:10px 24px;background:var(--bg);border:1px solid var(--borde);border-radius:8px;cursor:pointer;font-size:13px">Cerrar sesión</button>
+  </div>
+</div>
+
 <div class="hdr">
   <div>
     <div class="hdr-logo">Audit<span>Not</span> Pro</div>
     <div class="hdr-sub">Sistema de Auditoría Antilavado — LFPIORPI</div>
   </div>
   <span class="sync-badge" id="sync-badge">⏳ Conectando</span>
+  <div style="display:flex;align-items:center;gap:8px">
+    <div id="user-info" style="display:none;align-items:center;gap:8px">
+      <img id="user-foto" src="" style="width:30px;height:30px;border-radius:50%;border:2px solid var(--azul3)" onerror="this.style.display='none'">
+      <span id="user-nombre" style="font-size:12px;font-weight:600;color:var(--azul);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+      <span id="user-rol-badge" style="font-size:10px;padding:2px 8px;border-radius:20px;font-weight:700"></span>
+    </div>
+    <button id="btn-logout" onclick="window._logoutUser()" style="display:none;padding:5px 10px;font-size:11px;background:var(--bg);border:1px solid var(--borde);border-radius:6px;cursor:pointer;color:var(--gris)">Salir</button>
+  </div>
   <div class="hdr-not" onclick="showPage('inicio')">
     <b id="hdr-not-name">← Selecciona una notaría</b>
     <span id="hdr-not-year"></span>
@@ -246,6 +516,7 @@ tr:last-child td{border-bottom:none}
   <button class="nav-btn" onclick="showPage('comparativo')">📈 Comparativo Años</button>
   <button class="nav-btn" onclick="showPage('uma')">📐 Tabla UMA</button>
   <button class="nav-btn" onclick="showPage('xml')">📤 XML SAT</button>
+  <button class="nav-btn" id="nav-btn-admin" style="display:none" onclick="showPage('admin')">👥 Usuarios</button>
   <button class="nav-btn" onclick="showPage('inicio')">🏠 Notarías</button>
 </div>
 
@@ -613,6 +884,13 @@ tr:last-child td{border-bottom:none}
   </div>
 </div>
 
+<!-- ── PÁGINA ADMIN USUARIOS ─────────────────────────────────── -->
+<div class="page" id="page-admin">
+  <div class="section-title">👥 Administración de Usuarios</div>
+  <div class="section-sub">Aprueba solicitudes de acceso y gestiona roles del equipo</div>
+  <div id="admin-panel-body"><div style="color:var(--gris)">Cargando usuarios...</div></div>
+</div>
+
 </div><!-- /main -->
 
 <!-- MODAL OPERACIÓN XML -->
@@ -767,7 +1045,9 @@ window._onDBReady=function(){
 function saveDB(){
   // Guardar backup local siempre
   try{localStorage.setItem('anpro_backup',JSON.stringify(window.DB));}catch(_){}
-  // Activar bandera inmediatamente para bloquear onSnapshot
+  // Marcar la notaría activa como dirty
+  if(curNot && window._markDirty) window._markDirty(curNot);
+  // Activar bandera para bloquear onSnapshot
   if(window._setSaving) window._setSaving(true);
   // Debounce para no saturar Firestore
   clearTimeout(_saveTimer);
@@ -822,6 +1102,7 @@ function editNotaria(id){
   n.titular=nuevoTitular.trim();
   n.estado=nuevoEstado.trim();
   if(curNot===id)document.getElementById('hdr-not-name').textContent=n.nombre;
+  if(window._markDirty) window._markDirty(id);
   saveDB();renderNotGrid();
 }
 
@@ -841,12 +1122,14 @@ function delNotaria(id){
   }
   saveDB();renderNotGrid();
 }
+
 function addNotaria(){
   const nom=document.getElementById('new-not-name').value.trim();
   if(!nom)return alert('Ingresa el nombre');
   const id='n'+Date.now();
   window.DB.notarias[id]={nombre:nom,titular:document.getElementById('new-not-titular').value.trim(),
     estado:document.getElementById('new-not-estado').value.trim(),years:{}};
+  if(window._markDirty) window._markDirty(id);
   saveDB();renderNotGrid();
   ['new-not-name','new-not-titular','new-not-estado'].forEach(i=>document.getElementById(i).value='');
 }
@@ -1043,6 +1326,7 @@ function updExps(esc){
     docsReq(exp[k].tipo).forEach(d=>{if(!exp[k].docs[d.id])exp[k].docs[d.id]={ok:false,nota:'',vigFecha:''};});
     if(!exp[k].nombre&&persona.nombre)exp[k].nombre=persona.nombre;
     if(!exp[k].rfc&&persona.rfc)exp[k].rfc=persona.rfc;
+    if(window._markDirtyExp) window._markDirtyExp(nid, k);
   }
   (esc.pA.personas||[]).forEach(p=>reg(p,esc.pA.label||'Parte A'));
   (esc.pB.personas||[]).forEach(p=>reg(p,esc.pB.label||'Parte B'));
@@ -1200,7 +1484,9 @@ function renderDocs(e,key){
 function togDoc(key,docId,val){
   const exp=window.DB.expedientes[curNot]||{};if(!exp[key])return;
   if(!exp[key].docs[docId])exp[key].docs[docId]={ok:false,nota:'',vigFecha:''};
-  exp[key].docs[docId].ok=val;saveDB();
+  exp[key].docs[docId].ok=val;
+  if(window._markDirtyExp) window._markDirtyExp(curNot,key);
+  saveDB();
   document.getElementById('docs-list-'+key).innerHTML=renderDocs(exp[key],key);
   const pct=getPct(exp[key]);const col=pct>=100?'var(--verde)':pct>=60?'var(--amarillo)':'var(--rojo)';
   const bar=document.getElementById('mpb');
@@ -1208,12 +1494,15 @@ function togDoc(key,docId,val){
 }
 function updDocVig(key,docId,val){
   const exp=window.DB.expedientes[curNot]||{};if(!exp[key]||!exp[key].docs[docId])return;
-  exp[key].docs[docId].vigFecha=val;saveDB();
+  exp[key].docs[docId].vigFecha=val;
+  if(window._markDirtyExp) window._markDirtyExp(curNot,key);
+  saveDB();
   document.getElementById('docs-list-'+key).innerHTML=renderDocs(exp[key],key);
 }
 function updDocNota(key,docId,val){
   const exp=window.DB.expedientes[curNot]||{};if(!exp[key]||!exp[key].docs[docId])return;
   exp[key].docs[docId].nota=val;
+  if(window._markDirtyExp) window._markDirtyExp(curNot,key);
   clearTimeout(window._nt);window._nt=setTimeout(()=>saveDB(),800);
 }
 function saveExp(key){
@@ -1227,6 +1516,7 @@ function saveExp(key){
   if(d.razon)e.nombre=d.razon;
   else if(d.appaterno||d.nombres)e.nombre=[d.appaterno,d.apmaterno,d.nombres].filter(Boolean).join(' ');
   if(d.rfc)e.rfc=d.rfc;
+  if(window._markDirtyExp) window._markDirtyExp(curNot, key);
   saveDB();closeM('modal-exp');renderExps();
 }
 
@@ -1356,7 +1646,9 @@ function guardarAviso(){
   const nid=curNot;if(!window.DB.avisos[nid])window.DB.avisos[nid]={};
   window.DB.avisos[nid][num]={num,folio:document.getElementById('sat-folio').value.trim(),
     fecha:document.getElementById('sat-fecha').value,estado:document.getElementById('sat-estado').value,ts:Date.now()};
-  saveDB();renderAvisos();
+  saveDB();
+  if(window._saveAvisos) window._saveAvisos();
+  renderAvisos();
 }
 function renderAvisos(){
   const av=window.DB.avisos[curNot]||{};
@@ -1628,6 +1920,7 @@ function showPage(name){
   if(name==='uma')renderUMA();
   if(name==='inicio')renderNotGrid();
   if(name==='xml')xmlInitPage();
+  if(name==='admin')renderAdminPanel();
 }
 function openTab(evt,id){
   evt.target.closest('.modal').querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
@@ -1636,6 +1929,153 @@ function openTab(evt,id){
 }
 function closeM(id){document.getElementById(id)?.classList.remove('open');}
 document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open');}));
+
+// ═══════════════════════════════════════════════════════════════
+// AUTENTICACIÓN — UI
+// ═══════════════════════════════════════════════════════════════
+
+// Mostrar pantalla de login
+window._showLoginScreen = function(){
+  document.getElementById('loading-overlay').classList.add('hidden');
+  document.getElementById('screen-login').style.display='flex';
+  document.getElementById('screen-pending').style.display='none';
+  document.querySelector('.hdr').style.display='none';
+  document.getElementById('main-nav').style.display='none';
+  document.querySelector('.main').style.display='none';
+};
+
+// Mostrar pantalla de espera (pendiente de aprobación)
+window._showPendingScreen = function(user){
+  document.getElementById('loading-overlay').classList.add('hidden');
+  document.getElementById('screen-login').style.display='none';
+  document.getElementById('screen-pending').style.display='flex';
+  document.querySelector('.hdr').style.display='none';
+  document.getElementById('main-nav').style.display='none';
+  document.querySelector('.main').style.display='none';
+  document.getElementById('pending-email').textContent=`Cuenta: ${user.email}`;
+};
+
+// Usuario aprobado — mostrar app
+window._onUserApproved = function(userData){
+  document.getElementById('screen-login').style.display='none';
+  document.getElementById('screen-pending').style.display='none';
+  document.querySelector('.hdr').style.display='';
+  document.querySelector('.main').style.display='';
+
+  // Mostrar info de usuario en header
+  const u = window._getCurrentUser();
+  if(u){
+    document.getElementById('user-info').style.display='flex';
+    document.getElementById('btn-logout').style.display='';
+    document.getElementById('user-nombre').textContent = userData.nombre||u.email;
+    const foto = document.getElementById('user-foto');
+    if(u.photoURL){ foto.src=u.photoURL; foto.style.display=''; }
+    else foto.style.display='none';
+    const badge = document.getElementById('user-rol-badge');
+    const roles = {admin:'👑 Admin',auditor:'🔍 Auditor',notaria:'🏛️ Notaría',pendiente:'⏳ Pendiente'};
+    const colors = {admin:'background:#fef3c7;color:#92400e',auditor:'background:#dbeafe;color:#1e40af',
+                    notaria:'background:#dcfce7;color:#166534',pendiente:'background:#f3f4f6;color:#6b7280'};
+    badge.textContent = roles[userData.rol]||userData.rol;
+    badge.style.cssText = (colors[userData.rol]||'') + ';font-size:10px;padding:2px 8px;border-radius:20px;font-weight:700';
+  }
+
+  // Mostrar botón admin solo si es admin o auditor
+  if(userData.rol==='admin'){
+    document.getElementById('nav-btn-admin').style.display='';
+  }
+
+  // Cargar datos
+  if(window._loadDB) window._loadDB();
+  else setTimeout(()=>{ if(window._loadDB) window._loadDB(); }, 500);
+};
+
+// Render panel de administración
+async function renderAdminPanel(){
+  const body = document.getElementById('admin-panel-body');
+  const ud = window._getCurrentUserData();
+  if(!ud || ud.rol !== 'admin'){
+    body.innerHTML='<div class="alert" style="background:var(--rojo2);color:var(--rojo);padding:12px;border-radius:8px">⛔ Acceso restringido — Solo administradores</div>';
+    return;
+  }
+  body.innerHTML='<div style="color:var(--gris)">Cargando...</div>';
+  const users = await window._loadPendingUsers();
+  const notarias = window.DB?.notarias||{};
+
+  const pending = users.filter(u=>!u.aprobado);
+  const approved = users.filter(u=>u.aprobado);
+
+  let html='';
+
+  // Pendientes
+  if(pending.length){
+    html+=`<div style="font-weight:700;font-size:14px;color:var(--rojo);margin-bottom:12px">⏳ Solicitudes Pendientes (${pending.length})</div>`;
+    pending.forEach(u=>{
+      html+=`
+      <div class="card" style="margin-bottom:10px;border-left:4px solid var(--amarillo)">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+          <div>
+            <div style="font-weight:700">${es(u.nombre||u.email)}</div>
+            <div style="font-size:12px;color:var(--gris)">${u.email}</div>
+            <div style="font-size:11px;color:var(--gris);margin-top:2px">${u.ts?new Date(u.ts).toLocaleDateString('es-MX'):''}</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <select id="rol-${u.uid}" style="font-size:12px;padding:4px 8px;border-radius:6px;border:1px solid var(--borde)">
+              <option value="auditor">🔍 Auditor (todas las notarías)</option>
+              <option value="notaria">🏛️ Notaría (solo la asignada)</option>
+            </select>
+            <select id="not-${u.uid}" style="font-size:12px;padding:4px 8px;border-radius:6px;border:1px solid var(--borde)">
+              <option value="">— Sin notaría asignada —</option>
+              ${Object.entries(notarias).map(([id,n])=>`<option value="${id}">${n.nombre}</option>`).join('')}
+            </select>
+            <button class="btn btn-primary btn-sm" onclick="adminAprobar('${u.uid}')">✅ Aprobar</button>
+            <button class="btn btn-danger btn-sm" onclick="adminRechazar('${u.uid}')">❌ Rechazar</button>
+          </div>
+        </div>
+      </div>`;
+    });
+  } else {
+    html+=`<div class="alert" style="background:var(--verde2);color:var(--verde);padding:10px 14px;border-radius:8px;margin-bottom:16px">✅ Sin solicitudes pendientes</div>`;
+  }
+
+  // Usuarios aprobados
+  html+=`<div style="font-weight:700;font-size:14px;color:var(--azul);margin:20px 0 12px">👤 Usuarios con Acceso (${approved.length})</div>`;
+  approved.forEach(u=>{
+    const not = u.notariaId && notarias[u.notariaId] ? notarias[u.notariaId].nombre : '—';
+    const roles={admin:'👑 Admin',auditor:'🔍 Auditor',notaria:'🏛️ Notaría'};
+    html+=`
+    <div class="card" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <div>
+        <div style="font-weight:600">${es(u.nombre||u.email)}</div>
+        <div style="font-size:12px;color:var(--gris)">${u.email} · ${roles[u.rol]||u.rol} · ${not}</div>
+      </div>
+      ${u.email!=='roberto.cardenasl77@gmail.com'?`<button class="btn btn-danger btn-xs" onclick="adminRevocar('${u.uid}')">🚫 Revocar</button>`:'<span style="font-size:11px;color:var(--gris)">Admin principal</span>'}
+    </div>`;
+  });
+
+  body.innerHTML=html;
+}
+window._renderAdminPanel = renderAdminPanel;
+
+async function adminAprobar(uid){
+  const rol = document.getElementById('rol-'+uid)?.value||'auditor';
+  const notariaId = document.getElementById('not-'+uid)?.value||'';
+  await window._approveUser(uid, rol, notariaId);
+  renderAdminPanel();
+}
+
+async function adminRechazar(uid){
+  if(!confirm('¿Rechazar y eliminar esta solicitud?')) return;
+  await window._rejectUser(uid);
+  renderAdminPanel();
+}
+
+async function adminRevocar(uid){
+  if(!confirm('¿Revocar acceso a este usuario? Deberá solicitar acceso nuevamente.')) return;
+  await window._approveUser(uid, 'pendiente', '');
+  // Marcar como no aprobado
+  await window._approveUser(uid, 'pendiente', '');
+  renderAdminPanel();
+}
 
 // ═══ INIT ═══
 renderUMA();
@@ -2757,6 +3197,7 @@ function xmlGenerar(){
     if(!window.DB.avisos)window.DB.avisos={};
     window.DB.avisos[ref]={ref,mes,rfc:rfcNot,ops:xmlOps.length,ts:Date.now(),generado:true};
     saveDB();
+    if(window._saveAvisos) window._saveAvisos();
   }
 }
 
@@ -2796,13 +3237,16 @@ function xmlLimpiar(){
   xmlRenderOps();
   xmlInitPage();
 }
-// Esperar a que el módulo Firebase esté listo
+// La DB ahora la carga _onUserApproved después del login con Google
+// Solo mostramos loading hasta que onAuthStateChanged responda
 window.addEventListener('load',()=>{
-  if(window._loadDB){window._loadDB();}
-  else{
-    // Fallback si Firebase tarda
-    setTimeout(()=>{if(window._loadDB)window._loadDB();else window._onDBReady();},1500);
-  }
+  // Si Firebase Auth no responde en 8 segundos, mostrar login directamente
+  setTimeout(()=>{
+    const overlay=document.getElementById('loading-overlay');
+    if(overlay&&!overlay.classList.contains('hidden')){
+      window._showLoginScreen&&window._showLoginScreen();
+    }
+  },8000);
 });
 </script>
 </body>
