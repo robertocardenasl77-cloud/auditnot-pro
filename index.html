@@ -527,7 +527,7 @@ tr:last-child td{border-bottom:none}
   <div class="section-title">🏛️ AuditNot Pro</div>
   <div class="section-sub">Datos sincronizados en tiempo real con Firebase. Todos los usuarios ven la misma información.</div>
   <div class="inicio-grid" id="not-grid"></div>
-  <div style="margin-top:20px">
+  <div style="margin-top:20px" id="nueva-notaria-form">
     <div class="card" style="max-width:400px">
       <div class="card-title">➕ Nueva Notaría</div>
       <div class="fg"><label>Nombre / Número</label><input id="new-not-name" placeholder="Notaría 8 de Coahuila"></div>
@@ -1037,8 +1037,13 @@ window._onDBReady=function(){
   pB=[{id:'pi2',nombre:'',rfc:'',tipo:'pf',pct:''}];
   renderPs();
   document.getElementById('f-fecha').value=new Date().toISOString().slice(0,10);
-  const firstNot=Object.keys(window.DB.notarias)[0];
-  if(firstNot&&!curNot)selNot(firstNot);
+  const ud = window._getCurrentUserData ? window._getCurrentUserData() : null;
+  const isNotaria = ud && ud.rol === 'notaria';
+  const assignedId = isNotaria ? (ud.notariaId||'') : null;
+  const notToSelect = (isNotaria && assignedId && window.DB.notarias[assignedId])
+    ? assignedId
+    : Object.keys(window.DB.notarias)[0];
+  if(notToSelect&&!curNot)selNot(notToSelect);
   else if(curNot)refreshCurrentPage();
 };
 
@@ -1072,15 +1077,30 @@ function refreshCurrentPage(){
 // ═══ NOTARÍAS ═══
 function renderNotGrid(){
   const g=document.getElementById('not-grid');g.innerHTML='';
-  for(const id in window.DB.notarias){
-    const n=window.DB.notarias[id];
+  const ud = window._getCurrentUserData ? window._getCurrentUserData() : null;
+  const isNotaria = ud && ud.rol === 'notaria';
+  const assignedId = isNotaria ? (ud.notariaId||'') : null;
+
+  if(isNotaria && !assignedId){
+    g.innerHTML='<div class="alert" style="background:#fef9c3;color:#854d0e;padding:14px 16px;border-radius:8px;border:1px solid #fde047">⚠️ Tu cuenta no tiene una notaría asignada. Contacta al administrador para que te vincule a una notaría.</div>';
+    return;
+  }
+
+  const notariasToShow = isNotaria
+    ? (window.DB.notarias[assignedId] ? {[assignedId]: window.DB.notarias[assignedId]} : {})
+    : window.DB.notarias;
+
+  for(const id in notariasToShow){
+    const n=notariasToShow[id];
     const cnt=Object.values(n.years||{}).reduce((s,y)=>s+(y.escrituras||[]).length,0);
     const d=document.createElement('div');d.className='not-card'+(curNot===id?' selected':'');
-    d.innerHTML=`
+    const btns = isNotaria ? '' : `
       <div style="display:flex;justify-content:flex-end;gap:4px;margin-bottom:6px">
         <button class="btn btn-ghost btn-xs" title="Editar" onclick="event.stopPropagation();editNotaria('${id}')">✏️</button>
         <button class="btn btn-danger btn-xs" title="Eliminar" onclick="event.stopPropagation();delNotaria('${id}')">🗑️</button>
-      </div>
+      </div>`;
+    d.innerHTML=`
+      ${btns}
       <h3>${n.nombre}</h3>
       <p>${n.titular||''}</p>
       <p style="font-size:11px;margin-top:4px">${n.estado||''}</p>
@@ -1979,9 +1999,15 @@ window._onUserApproved = function(userData){
     badge.style.cssText = (colors[userData.rol]||'') + ';font-size:10px;padding:2px 8px;border-radius:20px;font-weight:700';
   }
 
-  // Mostrar botón admin solo si es admin o auditor
+  // Mostrar botón admin solo si es admin
   if(userData.rol==='admin'){
     document.getElementById('nav-btn-admin').style.display='';
+  }
+
+  // Ocultar form "Nueva Notaría" para el rol notaria (solo lectura de su notaría asignada)
+  const formNuevaNot = document.getElementById('nueva-notaria-form');
+  if(formNuevaNot){
+    formNuevaNot.style.display = userData.rol === 'notaria' ? 'none' : '';
   }
 
   // Cargar datos
@@ -2042,13 +2068,23 @@ async function renderAdminPanel(){
   approved.forEach(u=>{
     const not = u.notariaId && notarias[u.notariaId] ? notarias[u.notariaId].nombre : '—';
     const roles={admin:'👑 Admin',auditor:'🔍 Auditor',notaria:'🏛️ Notaría'};
+    const notariaSelector = u.rol === 'notaria' ? `
+      <select id="reassign-not-${u.uid}" style="font-size:12px;padding:4px 8px;border-radius:6px;border:1px solid var(--borde)">
+        <option value="">— Sin notaría —</option>
+        ${Object.entries(notarias).map(([id,n])=>`<option value="${id}"${id===u.notariaId?' selected':''}>${n.nombre}</option>`).join('')}
+      </select>
+      <button class="btn btn-primary btn-xs" onclick="adminReasignarNotaria('${u.uid}')">💾 Guardar</button>
+    ` : '';
     html+=`
     <div class="card" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
       <div>
         <div style="font-weight:600">${es(u.nombre||u.email)}</div>
         <div style="font-size:12px;color:var(--gris)">${u.email} · ${roles[u.rol]||u.rol} · ${not}</div>
       </div>
-      ${u.email!=='roberto.cardenasl77@gmail.com'?`<button class="btn btn-danger btn-xs" onclick="adminRevocar('${u.uid}')">🚫 Revocar</button>`:'<span style="font-size:11px;color:var(--gris)">Admin principal</span>'}
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        ${notariaSelector}
+        ${u.email!=='roberto.cardenasl77@gmail.com'?`<button class="btn btn-danger btn-xs" onclick="adminRevocar('${u.uid}')">🚫 Revocar</button>`:'<span style="font-size:11px;color:var(--gris)">Admin principal</span>'}
+      </div>
     </div>`;
   });
 
@@ -2072,8 +2108,14 @@ async function adminRechazar(uid){
 async function adminRevocar(uid){
   if(!confirm('¿Revocar acceso a este usuario? Deberá solicitar acceso nuevamente.')) return;
   await window._approveUser(uid, 'pendiente', '');
-  // Marcar como no aprobado
-  await window._approveUser(uid, 'pendiente', '');
+  renderAdminPanel();
+}
+
+async function adminReasignarNotaria(uid){
+  const notariaId = document.getElementById('reassign-not-'+uid)?.value||'';
+  const nombre = notariaId && window.DB.notarias[notariaId] ? window.DB.notarias[notariaId].nombre : 'Sin notaría';
+  if(!confirm(`¿Asignar la notaría "${nombre}" a este usuario?`)) return;
+  await window._approveUser(uid, 'notaria', notariaId);
   renderAdminPanel();
 }
 
