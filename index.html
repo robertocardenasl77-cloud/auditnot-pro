@@ -3,6 +3,18 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'self';
+  script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://www.gstatic.com https://*.googleapis.com https://apis.google.com;
+  style-src 'self' 'unsafe-inline';
+  img-src 'self' data: https://www.gstatic.com https://lh3.googleusercontent.com https://*.googleusercontent.com;
+  font-src 'self' data:;
+  connect-src 'self' https://*.googleapis.com https://*.firebaseio.com https://firestore.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com wss://*.firebaseio.com https://www.googleapis.com;
+  frame-src https://*.firebaseapp.com https://accounts.google.com;
+  object-src 'none';
+  base-uri 'self';
+  form-action 'self';
+">
 <title>AuditNot Pro</title>
 
 <!-- SheetJS para leer archivos Excel .xlsx -->
@@ -104,10 +116,51 @@ onAuthStateChanged(auth, async user=>{
 });
 
 // ═══════════════════════════════════════════════════════════════
+// RATE LIMIT — protege la cuota de Firestore contra spam
+// Ventana deslizante: máx N escrituras por minuto, debounce ms
+// ═══════════════════════════════════════════════════════════════
+const RATE_LIMIT_MAX_PER_MIN = 30;
+const RATE_LIMIT_WINDOW_MS   = 60_000;
+const RATE_LIMIT_DEBOUNCE_MS = 800;
+const _saveTimestamps = [];
+let   _saveDebounceTimer = null;
+let   _savePendingResolve = null;
+
+function _rateLimitCheck(){
+  const now = Date.now();
+  while(_saveTimestamps.length && _saveTimestamps[0] < now - RATE_LIMIT_WINDOW_MS){
+    _saveTimestamps.shift();
+  }
+  return _saveTimestamps.length < RATE_LIMIT_MAX_PER_MIN;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // GUARDAR — SUBCOLECCIONES
 // Guarda solo la notaría activa y sus escrituras (incremental)
+// Aplica debounce y rate limit antes de escribir a Firestore.
 // ═══════════════════════════════════════════════════════════════
-async function saveDB(){
+function saveDB(){
+  // Debounce: agrupa escrituras consecutivas en una sola
+  if(_saveDebounceTimer) clearTimeout(_saveDebounceTimer);
+  return new Promise(resolve=>{
+    _savePendingResolve = resolve;
+    _saveDebounceTimer = setTimeout(async ()=>{
+      _saveDebounceTimer = null;
+      if(!_rateLimitCheck()){
+        window._syncStatus('⏸️ Demasiados cambios — espera unos segundos');
+        // Reintento diferido a los 5s
+        setTimeout(()=>{ if(_dirtyNotarias.size||_dirtyExps.size) saveDB().then(_savePendingResolve||(()=>{})); }, 5000);
+        resolve(false);
+        return;
+      }
+      _saveTimestamps.push(Date.now());
+      await _doSave();
+      resolve(true);
+    }, RATE_LIMIT_DEBOUNCE_MS);
+  });
+}
+
+async function _doSave(){
   _saving = true;
   window._syncStatus('💾 Guardando...');
   try{
@@ -121,19 +174,15 @@ async function saveDB(){
   }finally{ setTimeout(()=>{ _saving=false; },3000); }
 }
 
-// Igual que saveDB pero sin debounce (para importaciones)
+// Igual que saveDB pero sin debounce (para importaciones).
+// Aún cuenta para la ventana de rate limit y espera si está saturada.
 async function saveDBImmediate(){
-  _saving = true;
-  window._syncStatus('💾 Guardando...');
-  try{
-    await _flushDirtyNotarias();
-    await _flushDirtyExpedientes();
-    window._syncStatus('✅ Sincronizado');
-    try{localStorage.setItem('anpro_backup',JSON.stringify(window.DB));}catch(_){}
-  }catch(e){
-    window._syncStatus('❌ Error al guardar: '+e.message);
-    console.error(e);
-  }finally{ setTimeout(()=>{ _saving=false; },3000); }
+  while(!_rateLimitCheck()){
+    window._syncStatus('⏸️ Esperando ventana de rate limit...');
+    await new Promise(r=>setTimeout(r,2000));
+  }
+  _saveTimestamps.push(Date.now());
+  await _doSave();
 }
 
 // ── Sets de IDs marcados como "sucios" (necesitan guardarse) ──
@@ -985,11 +1034,11 @@ function abrirCapturaMonto(){
         <thead><tr><th>N°</th><th>Fecha</th><th>Naturaleza</th><th>Otorgantes</th><th>Monto ($)</th></tr></thead>
         <tbody>${escs.sort((a,b)=>a.num-b.num).map(e=>`
           <tr>
-            <td><b>${e.num}</b></td>
-            <td>${e.fecha}</td>
-            <td style="max-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${NAT_LABEL[e.naturaleza]||e.naturaleza}</td>
-            <td style="max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${(e.pA.personas||[]).map(p=>p.nombre).filter(Boolean).join(', ')||'—'}</td>
-            <td><input type="number" data-id="${e.id}" placeholder="0.00" style="width:130px;padding:5px 8px;font-size:12px" min="0"></td>
+            <td><b>${es(e.num)}</b></td>
+            <td>${es(e.fecha)}</td>
+            <td style="max-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${es(NAT_LABEL[e.naturaleza]||e.naturaleza||'')}</td>
+            <td style="max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${es((e.pA.personas||[]).map(p=>p.nombre).filter(Boolean).join(', ')||'—')}</td>
+            <td><input type="number" data-id="${es(e.id)}" placeholder="0.00" style="width:130px;padding:5px 8px;font-size:12px" min="0"></td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -1132,9 +1181,9 @@ function renderNotGrid(){
         <button class="btn btn-ghost btn-xs" title="Editar" onclick="event.stopPropagation();editNotaria('${id}')">✏️</button>
         <button class="btn btn-danger btn-xs" title="Eliminar" onclick="event.stopPropagation();delNotaria('${id}')">🗑️</button>
       </div>
-      <h3>${n.nombre}</h3>
-      <p>${n.titular||''}</p>
-      <p style="font-size:11px;margin-top:4px">${n.estado||''}</p>
+      <h3>${es(n.nombre)}</h3>
+      <p>${es(n.titular||'')}</p>
+      <p style="font-size:11px;margin-top:4px">${es(n.estado||'')}</p>
       <p style="margin-top:8px"><b>${cnt}</b> escrituras</p>`;
     d.onclick=()=>selNot(id);g.appendChild(d);
   }
@@ -1400,9 +1449,9 @@ function renderExps(){
     return`<div class="exp-card ${pct>=100?'completo':'incompleto'}">
       <div class="flex-between">
         <div>
-          <div style="font-weight:700">${e.nombre||'Sin nombre'}${pct<100?' <span style="color:var(--naranja)">⚠️</span>':''}</div>
-          <div class="text-sm">${e.rfc||'Sin RFC'} · ${e.tipo==='pm'?'Persona Moral':'Persona Física'}</div>
-          <div class="text-sm" style="margin-top:2px">${e.escrituras.length} escritura(s): ${e.escrituras.slice(0,5).map(s=>s.num).join(', ')}${e.escrituras.length>5?'...':''}</div>
+          <div style="font-weight:700">${es(e.nombre||'Sin nombre')}${pct<100?' <span style="color:var(--naranja)">⚠️</span>':''}</div>
+          <div class="text-sm">${es(e.rfc||'Sin RFC')} · ${e.tipo==='pm'?'Persona Moral':'Persona Física'}</div>
+          <div class="text-sm" style="margin-top:2px">${e.escrituras.length} escritura(s): ${es(e.escrituras.slice(0,5).map(s=>s.num).join(', '))}${e.escrituras.length>5?'...':''}</div>
         </div>
         <div style="text-align:right">
           <div style="font-size:22px;font-weight:800;color:${col}">${pct}%</div>
@@ -1435,7 +1484,7 @@ function openExp(key){
   <div class="tab-pane" id="te">
     <div class="tbl-wrap"><table>
       <thead><tr><th>N°</th><th>Fecha</th><th>Naturaleza</th><th>Rol</th></tr></thead>
-      <tbody>${e.escrituras.map(s=>`<tr><td><b>${s.num}</b></td><td>${s.fecha}</td><td>${NAT_LABEL[s.naturaleza]||s.naturaleza}</td><td>${s.rol}</td></tr>`).join('')}</tbody>
+      <tbody>${e.escrituras.map(s=>`<tr><td><b>${es(s.num)}</b></td><td>${es(s.fecha)}</td><td>${es(NAT_LABEL[s.naturaleza]||s.naturaleza||'')}</td><td>${es(s.rol||'')}</td></tr>`).join('')}</tbody>
     </table></div>
   </div>
   <div style="margin-top:16px;text-align:right">
@@ -1602,8 +1651,8 @@ function renderEscs(){
         if(u){const p=e.monto/u.umbral*100,mf='$'+fmt(e.monto);
           mH=p>=100?`<span style="color:var(--rojo);font-weight:700">🔴 ${mf}</span>`:p>=80?`<span style="color:var(--amarillo);font-weight:700">🟡 ${mf}</span>`:`<span style="color:var(--verde)">🟢 ${mf}</span>`;}}
     }
-    const pAt=(e.pA.personas||[]).map(p=>p.nombre||p.rfc||'?').join(', ')||'—';
-    const pBt=(e.pB.personas||[]).map(p=>p.nombre||p.rfc||'?').join(', ')||'—';
+    const pAt=es((e.pA.personas||[]).map(p=>p.nombre||p.rfc||'?').join(', ')||'—');
+    const pBt=es((e.pB.personas||[]).map(p=>p.nombre||p.rfc||'?').join(', ')||'—');
     let expW='✅';
     for(const p of[...(e.pA.personas||[]),...(e.pB.personas||[])]){
       if(!p.nombre&&!p.rfc)continue;
@@ -1627,9 +1676,10 @@ function renderEscs(){
       }
     }
 
+    const natTxt=es(NAT_LABEL[e.naturaleza]||e.naturaleza||'');
     return`<tr>
-      <td><b>${e.num}</b></td><td>${e.fecha}</td>
-      <td style="max-width:130px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${NAT_LABEL[e.naturaleza]||e.naturaleza}">${NAT_LABEL[e.naturaleza]||e.naturaleza}</td>
+      <td><b>${es(e.num)}</b></td><td>${es(e.fecha)}</td>
+      <td style="max-width:130px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${natTxt}">${natTxt}</td>
       <td style="max-width:130px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${pAt}">${pAt}</td>
       <td style="max-width:130px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${pBt}">${pBt}</td>
       <td>${mH}</td><td><span class="chip ${cc}">${cl}</span></td>
@@ -1681,8 +1731,8 @@ function renderAcumulados(){
   g.innerHTML=`<div class="three-col">`+items.map(a=>{
     const tot=a.ops.reduce((s,o)=>s+o.montoPropio,0);
     const col=tot>1500000?'var(--rojo)':tot>800000?'var(--naranja)':'var(--verde)';
-    return`<div class="card"><div style="font-weight:700">${a.nombre||'Sin nombre'}</div>
-      <div class="text-sm">${a.rfc||'Sin RFC'}</div>
+    return`<div class="card"><div style="font-weight:700">${es(a.nombre||'Sin nombre')}</div>
+      <div class="text-sm">${es(a.rfc||'Sin RFC')}</div>
       <div style="font-size:20px;font-weight:800;color:${col};margin:6px 0">$${fmt(tot)}</div>
       <div class="acum-bar"><div class="acum-fill" style="width:${Math.min(tot/2000000*100,100)}%;background:${col}"></div></div>
       <div class="text-sm" style="margin-top:4px">${a.ops.length} operación(es)</div>
@@ -1710,8 +1760,8 @@ function renderAvisos(){
     const cl=est==='presentado'?'Presentado ✅':est==='no_aplica'?'No aplica ⬜':'Pendiente ⏳';
     const u=e.tipo!=='siempre'?getUmbral(e.fecha,e.tipo==='pm'?'pm':'inmueble'):null;
     const over=u&&e.monto>=u.umbral?'<span class="chip chip-rojo" style="font-size:10px;margin-left:4px">Sobre umbral</span>':'';
-    return`<tr><td><b>${e.num}</b></td><td>${NAT_LABEL[e.naturaleza]||e.naturaleza}</td>
-      <td>${e.monto?'$'+fmt(e.monto):'—'}${over}</td><td>${a.folio||'—'}</td><td>${a.fecha||'—'}</td>
+    return`<tr><td><b>${es(e.num)}</b></td><td>${es(NAT_LABEL[e.naturaleza]||e.naturaleza||'')}</td>
+      <td>${e.monto?'$'+fmt(e.monto):'—'}${over}</td><td>${es(a.folio||'—')}</td><td>${es(a.fecha||'—')}</td>
       <td><span class="chip ${cc}">${cl}</span></td></tr>`;
   }).join('');
 }
@@ -1941,7 +1991,7 @@ function mapearNaturaleza(txt){
 
 // ═══ HELPERS ═══
 function fmt(n){return Math.round(n).toLocaleString('es-MX');}
-function es(s){return(s||'').toString().replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function es(s){return(s||'').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/`/g,'&#96;');}
 
 function exportCSV(){
   const escs=getEscs();
@@ -2066,7 +2116,7 @@ async function renderAdminPanel(){
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
           <div>
             <div style="font-weight:700">${es(u.nombre||u.email)}</div>
-            <div style="font-size:12px;color:var(--gris)">${u.email}</div>
+            <div style="font-size:12px;color:var(--gris)">${es(u.email)}</div>
             <div style="font-size:11px;color:var(--gris);margin-top:2px">${u.ts?new Date(u.ts).toLocaleDateString('es-MX'):''}</div>
           </div>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -2076,7 +2126,7 @@ async function renderAdminPanel(){
             </select>
             <select id="not-${u.uid}" style="font-size:12px;padding:4px 8px;border-radius:6px;border:1px solid var(--borde)">
               <option value="">— Sin notaría asignada —</option>
-              ${Object.entries(notarias).map(([id,n])=>`<option value="${id}">${n.nombre}</option>`).join('')}
+              ${Object.entries(notarias).map(([id,n])=>`<option value="${es(id)}">${es(n.nombre)}</option>`).join('')}
             </select>
             <button class="btn btn-primary btn-sm" onclick="adminAprobar('${u.uid}')">✅ Aprobar</button>
             <button class="btn btn-danger btn-sm" onclick="adminRechazar('${u.uid}')">❌ Rechazar</button>
@@ -2097,7 +2147,7 @@ async function renderAdminPanel(){
     <div class="card" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
       <div>
         <div style="font-weight:600">${es(u.nombre||u.email)}</div>
-        <div style="font-size:12px;color:var(--gris)">${u.email} · ${roles[u.rol]||u.rol} · ${not}</div>
+        <div style="font-size:12px;color:var(--gris)">${es(u.email)} · ${roles[u.rol]||es(u.rol||'')} · ${es(not)}</div>
       </div>
       ${u.email!=='roberto.cardenasl77@gmail.com'?`<button class="btn btn-danger btn-xs" onclick="adminRevocar('${u.uid}')">🚫 Revocar</button>`:'<span style="font-size:11px;color:var(--gris)">Admin principal</span>'}
     </div>`;
@@ -2287,8 +2337,8 @@ function xmlRenderOps(){
   c.innerHTML=xmlOps.map((op,i)=>`
     <div class="card" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
       <div>
-        <b>${op.instrumento}</b> — ${op.fecha_op||''} —
-        <span style="color:var(--azul)">${XML_TIPOS_ACT.find(t=>t.val===op.tipo_act)?.label||op.tipo_act}</span>
+        <b>${es(op.instrumento)}</b> — ${es(op.fecha_op||'')} —
+        <span style="color:var(--azul)">${es(XML_TIPOS_ACT.find(t=>t.val===op.tipo_act)?.label||op.tipo_act||'')}</span>
       </div>
       <div style="display:flex;gap:6px">
         <button class="btn btn-ghost btn-xs" onclick="xmlEditOp(${i})">✏️</button>

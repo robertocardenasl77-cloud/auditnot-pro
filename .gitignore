@@ -1,0 +1,34 @@
+# Secretos y credenciales
+.env
+.env.*
+*.key
+*.pem
+serviceAccountKey.json
+*-firebase-adminsdk-*.json
+firebase-debug.log
+firebase-debug.*.log
+.firebaserc.local
+
+# Firebase y herramientas
+.firebase/
+dataconnect-generated/
+
+# Dependencias
+node_modules/
+package-lock.json
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Editores
+.vscode/
+.idea/
+*.swp
+*~
+
+# Builds y caches
+dist/
+build/
+.cache/
+*.log
