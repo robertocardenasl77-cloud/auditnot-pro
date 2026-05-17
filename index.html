@@ -991,6 +991,22 @@ tr:last-child td{border-bottom:none}
   <div id="admin-panel-body"><div style="color:var(--gris)">Cargando usuarios...</div></div>
 </div>
 
+<!-- ── MODAL EDITAR USUARIO APROBADO ─────────────────────────── -->
+<div id="modal-edit-user" class="modal-overlay">
+  <div class="modal" style="max-width:480px">
+    <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--borde);padding-bottom:10px;margin-bottom:14px">
+      <h2 id="edit-user-titulo" style="font-size:16px;color:var(--azul);margin:0">Editar usuario</h2>
+      <button onclick="document.getElementById('modal-edit-user').classList.remove('open')" style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--gris)">×</button>
+    </div>
+    <input type="hidden" id="edit-user-uid">
+    <div id="edit-user-body"></div>
+    <div style="border-top:1px solid var(--borde);padding-top:12px;margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
+      <button onclick="document.getElementById('modal-edit-user').classList.remove('open')" style="padding:8px 16px;background:var(--bg);border:1px solid var(--borde);border-radius:6px;cursor:pointer">Cancelar</button>
+      <button onclick="adminGuardarEdit()" style="padding:8px 18px;background:var(--azul);color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600">💾 Guardar</button>
+    </div>
+  </div>
+</div>
+
 </div><!-- /main -->
 
 <!-- MODAL OPERACIÓN XML -->
@@ -2141,19 +2157,30 @@ async function renderAdminPanel(){
   // Usuarios aprobados
   html+=`<div style="font-weight:700;font-size:14px;color:var(--azul);margin:20px 0 12px">👤 Usuarios con Acceso (${approved.length})</div>`;
   approved.forEach(u=>{
-    const not = u.notariaId && notarias[u.notariaId] ? notarias[u.notariaId].nombre : '—';
-    const roles={admin:'👑 Admin',auditor:'🔍 Auditor',notaria:'🏛️ Notaría'};
+    const notValida = u.notariaId && notarias[u.notariaId];
+    const not = notValida ? notarias[u.notariaId].nombre : (u.notariaId?`⚠️ ${u.notariaId} (no existe)`:'—');
+    const roles={admin:'👑 Admin',auditor:'🔍 Auditor',notaria:'🏛️ Notaría',notario:'🏛️ Notaría'};
+    const rolMostrar = roles[u.rol]||(u.rol?es(u.rol):'⚠️ sin rol');
+    const filaInfoColor = (u.rol && (notValida || u.rol==='admin' || u.rol==='auditor')) ? 'var(--gris)' : 'var(--rojo)';
     html+=`
     <div class="card" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-      <div>
+      <div style="min-width:0;flex:1">
         <div style="font-weight:600">${es(u.nombre||u.email)}</div>
-        <div style="font-size:12px;color:var(--gris)">${es(u.email)} · ${roles[u.rol]||es(u.rol||'')} · ${es(not)}</div>
+        <div style="font-size:12px;color:${filaInfoColor}">${es(u.email)} · ${rolMostrar} · ${typeof not==='string'&&not.startsWith('⚠️')?not:es(not)}</div>
       </div>
-      ${u.email!=='roberto.cardenasl77@gmail.com'?`<button class="btn btn-danger btn-xs" onclick="adminRevocar('${u.uid}')">🚫 Revocar</button>`:'<span style="font-size:11px;color:var(--gris)">Admin principal</span>'}
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        ${u.email!=='roberto.cardenasl77@gmail.com'?`
+          <button class="btn btn-outline btn-xs" onclick="adminEditar('${es(u.uid)}')">✏️ Editar</button>
+          <button class="btn btn-danger btn-xs" onclick="adminRevocar('${es(u.uid)}')">🚫 Revocar</button>
+        `:'<span style="font-size:11px;color:var(--gris)">Admin principal</span>'}
+      </div>
     </div>`;
   });
 
   body.innerHTML=html;
+
+  // Guardar lista de usuarios y notarías en memoria para el modal de edición
+  window._adminCache = { users, notarias };
 }
 window._renderAdminPanel = renderAdminPanel;
 
@@ -2170,13 +2197,60 @@ async function adminRechazar(uid){
   renderAdminPanel();
 }
 
+// REVOCAR — elimina el doc para que el usuario tenga que volver a solicitar acceso.
+// (Antes llamaba a _approveUser que dejaba aprobado:true; ahora sí revoca.)
 async function adminRevocar(uid){
-  if(!confirm('¿Revocar acceso a este usuario? Deberá solicitar acceso nuevamente.')) return;
-  await window._approveUser(uid, 'pendiente', '');
-  // Marcar como no aprobado
-  await window._approveUser(uid, 'pendiente', '');
+  if(!confirm('¿Revocar acceso a este usuario? El doc se eliminará y tendrá que volver a solicitar acceso al loguearse.')) return;
+  await window._rejectUser(uid);
   renderAdminPanel();
 }
+
+// EDITAR — abre modal con rol y notaría para corregir un usuario aprobado
+function adminEditar(uid){
+  const cache = window._adminCache;
+  if(!cache) return;
+  const u = cache.users.find(x=>x.uid===uid);
+  if(!u) return alert('Usuario no encontrado');
+  const notariasOpts = Object.entries(cache.notarias)
+    .map(([id,n])=>`<option value="${es(id)}"${u.notariaId===id?' selected':''}>${es(n.nombre)} (${es(id)})</option>`)
+    .join('');
+  document.getElementById('edit-user-titulo').textContent=`Editar: ${u.nombre||u.email}`;
+  document.getElementById('edit-user-body').innerHTML=`
+    <div style="font-size:12px;color:var(--gris);margin-bottom:12px">${es(u.email)}</div>
+    <div class="fg">
+      <label>Rol</label>
+      <select id="edit-user-rol" style="width:100%;padding:8px;border:1px solid var(--borde);border-radius:6px">
+        <option value="auditor"${u.rol==='auditor'?' selected':''}>🔍 Auditor (todas las notarías)</option>
+        <option value="notaria"${(u.rol==='notaria'||u.rol==='notario')?' selected':''}>🏛️ Notaría (solo la asignada)</option>
+      </select>
+    </div>
+    <div class="fg" style="margin-top:10px">
+      <label>Notaría asignada (solo aplica para rol Notaría)</label>
+      <select id="edit-user-notaria" style="width:100%;padding:8px;border:1px solid var(--borde);border-radius:6px">
+        <option value="">— Sin notaría asignada —</option>
+        ${notariasOpts}
+      </select>
+    </div>
+    <div style="background:var(--amarillo2);color:#92400e;padding:8px 10px;border-radius:6px;font-size:11px;margin-top:12px">
+      ⚠️ Si el rol es "Notaría" sin notaría asignada, el usuario no podrá acceder a ningún dato.
+    </div>`;
+  document.getElementById('edit-user-uid').value=uid;
+  document.getElementById('modal-edit-user').classList.add('open');
+}
+
+async function adminGuardarEdit(){
+  const uid = document.getElementById('edit-user-uid').value;
+  const rol = document.getElementById('edit-user-rol').value;
+  const notariaId = document.getElementById('edit-user-notaria').value;
+  if(rol==='notaria' && !notariaId){
+    if(!confirm('No asignaste notaría. Este usuario quedará SIN acceso a datos. ¿Continuar?')) return;
+  }
+  await window._approveUser(uid, rol, notariaId);
+  document.getElementById('modal-edit-user').classList.remove('open');
+  renderAdminPanel();
+}
+window.adminEditar = adminEditar;
+window.adminGuardarEdit = adminGuardarEdit;
 
 // ═══ INIT ═══
 renderUMA();
