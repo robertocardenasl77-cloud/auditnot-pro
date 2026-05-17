@@ -36,14 +36,20 @@ service cloud.firestore {
         && myProfile().aprobado == true;
     }
 
+    // Auditor: acceso de lectura/escritura a TODAS las notarías
+    function isAuditor() {
+      return isApproved() && myProfile().rol == 'auditor';
+    }
+
     function ownsNotaria(notId) {
-      return isApproved() && (isAdmin() || myProfile().notariaId == notId);
+      return isApproved() && (isAdmin() || isAuditor() || myProfile().notariaId == notId);
     }
 
     // expedientes/{docId} — el docId es "notId___clienteKey"
     function expDocOwnedBy(docId) {
       return isApproved() && (
         isAdmin()
+        || isAuditor()
         || myProfile().notariaId == docId.split('___')[0]
       );
     }
