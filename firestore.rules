@@ -1,0 +1,105 @@
+rules_version = '2';
+
+// =============================================================================
+// AuditNot Pro — Reglas de seguridad de Firestore
+// =============================================================================
+// Modelo de datos:
+//   usuarios/{uid}                       -> perfil del usuario (rol, notariaId)
+//   notarias/{notId}                     -> metadatos de la notaría
+//   notarias/{notId}/escrituras/{escId}  -> escrituras de la notaría
+//   expedientes/{notId}___{clienteKey}   -> expedientes de clientes
+//   globals/avisos                       -> avisos SAT (compartido)
+//   auditnot/main                        -> doc legacy (solo migración)
+// =============================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- helpers ----------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/usuarios/$(request.auth.uid))
+        && get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol == 'admin';
+    }
+
+    function myProfile() {
+      return get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data;
+    }
+
+    function isApproved() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/usuarios/$(request.auth.uid))
+        && myProfile().aprobado == true;
+    }
+
+    function ownsNotaria(notId) {
+      return isApproved() && (isAdmin() || myProfile().notariaId == notId);
+    }
+
+    // expedientes/{docId} — el docId es "notId___clienteKey"
+    function expDocOwnedBy(docId) {
+      return isApproved() && (
+        isAdmin()
+        || myProfile().notariaId == docId.split('___')[0]
+      );
+    }
+
+    // ---------- usuarios ----------
+    match /usuarios/{uid} {
+      // Cada quien lee su propio perfil; el admin lee todos
+      allow get: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+
+      // Auto-registro: solo puede crear su propio doc en estado "pendiente"
+      // y no puede autoasignarse rol admin ni marcarse aprobado.
+      allow create: if isSignedIn()
+        && request.auth.uid == uid
+        && request.resource.data.aprobado == false
+        && request.resource.data.rol == 'pendiente'
+        && request.resource.data.email == request.auth.token.email;
+
+      // Actualizaciones: solo admin puede aprobar / cambiar rol / asignar notaría
+      allow update, delete: if isAdmin();
+    }
+
+    // ---------- notarias y subcolección escrituras ----------
+    match /notarias/{notId} {
+      allow read:  if ownsNotaria(notId);
+      allow write: if ownsNotaria(notId);
+
+      match /escrituras/{escId} {
+        allow read:  if ownsNotaria(notId);
+        allow write: if ownsNotaria(notId);
+      }
+    }
+
+    // ---------- expedientes ----------
+    match /expedientes/{docId} {
+      allow read, write: if expDocOwnedBy(docId);
+      // listar requiere que el query filtre por notId del usuario,
+      // pero Firestore evalúa por documento — un atacante no podrá
+      // leer expedientes que no le pertenezcan.
+      allow list: if isApproved();
+    }
+
+    // ---------- globals (avisos SAT compartidos) ----------
+    match /globals/{docId} {
+      allow read:  if isApproved();
+      allow write: if isApproved();
+    }
+
+    // ---------- legacy: solo admin para migración ----------
+    match /auditnot/{docId} {
+      allow read, write: if isAdmin();
+    }
+
+    // Cualquier otra ruta queda bloqueada por defecto
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

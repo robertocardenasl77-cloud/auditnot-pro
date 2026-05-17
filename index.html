@@ -468,12 +468,63 @@ tr:last-child td{border-bottom:none}
   <div style="background:var(--card);border-radius:16px;padding:48px 40px;max-width:400px;width:100%;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.08)">
     <div style="font-size:36px;margin-bottom:8px">🏛️</div>
     <div style="font-size:24px;font-weight:800;color:var(--azul);margin-bottom:4px">AuditNot Pro</div>
-    <div style="font-size:13px;color:var(--gris);margin-bottom:32px">Sistema de Auditoría Antilavado — LFPIORPI</div>
-    <button onclick="window._loginGoogle()" style="width:100%;padding:14px;background:#fff;border:2px solid var(--borde);border-radius:10px;font-size:15px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:12px;transition:all .2s" onmouseover="this.style.borderColor='var(--azul)'" onmouseout="this.style.borderColor='var(--borde)'">
+    <div style="font-size:13px;color:var(--gris);margin-bottom:24px">Sistema de Auditoría Antilavado — LFPIORPI</div>
+
+    <label style="display:flex;align-items:flex-start;gap:8px;text-align:left;font-size:12px;color:#1e293b;background:var(--bg);border:1px solid var(--borde);border-radius:8px;padding:10px;margin-bottom:16px;cursor:pointer">
+      <input type="checkbox" id="chk-privacidad" style="margin-top:2px;flex-shrink:0" onchange="document.getElementById('btn-login-google').disabled=!this.checked;document.getElementById('btn-login-google').style.opacity=this.checked?'1':'.5';document.getElementById('btn-login-google').style.cursor=this.checked?'pointer':'not-allowed'">
+      <span>He leído y acepto el <a href="#" onclick="event.preventDefault();document.getElementById('modal-privacidad').classList.add('open')" style="color:var(--azul);text-decoration:underline;font-weight:600">Aviso de Privacidad</a> conforme a la LFPDPPP.</span>
+    </label>
+
+    <button id="btn-login-google" disabled onclick="if(!document.getElementById('chk-privacidad').checked){alert('Debes aceptar el Aviso de Privacidad para continuar.');return;}window._loginGoogle()" style="width:100%;padding:14px;background:#fff;border:2px solid var(--borde);border-radius:10px;font-size:15px;font-weight:600;cursor:not-allowed;display:flex;align-items:center;justify-content:center;gap:12px;transition:all .2s;opacity:.5" onmouseover="if(!this.disabled)this.style.borderColor='var(--azul)'" onmouseout="this.style.borderColor='var(--borde)'">
       <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" style="width:22px">
       Iniciar sesión con Google
     </button>
     <div style="font-size:11px;color:var(--gris);margin-top:20px">Acceso restringido — Solo usuarios autorizados</div>
+  </div>
+</div>
+
+<!-- ── MODAL AVISO DE PRIVACIDAD ──────────────────────────── -->
+<div id="modal-privacidad" class="modal-overlay">
+  <div class="modal" style="max-width:720px">
+    <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--borde);padding-bottom:12px;margin-bottom:16px;position:sticky;top:0;background:#fff">
+      <h2 style="font-size:18px;color:var(--azul);margin:0">📋 Aviso de Privacidad — AuditNot Pro</h2>
+      <button onclick="document.getElementById('modal-privacidad').classList.remove('open')" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--gris)">×</button>
+    </div>
+    <div style="font-size:13px;line-height:1.6;color:#1e293b">
+      <p style="color:var(--gris);font-size:11px;margin-bottom:16px">Última actualización: mayo 2026</p>
+
+      <h3 style="color:var(--azul);margin-top:14px;margin-bottom:6px;font-size:14px">1. Responsable del tratamiento</h3>
+      <p>El responsable del tratamiento de tus datos personales es el titular operativo de AuditNot Pro, contactable en <b>roberto.cardenasl77@gmail.com</b>. AuditNot Pro es una herramienta de uso interno para notarías mexicanas, orientada al cumplimiento de la Ley Federal para la Prevención e Identificación de Operaciones con Recursos de Procedencia Ilícita (LFPIORPI).</p>
+
+      <h3 style="color:var(--azul);margin-top:14px;margin-bottom:6px;font-size:14px">2. Datos personales recabados</h3>
+      <p>Se recaban dos tipos de datos:</p>
+      <p style="margin-left:16px"><b>a) Del usuario de la plataforma</b> (notario o personal autorizado): nombre, correo electrónico, foto de perfil de Google e identificador único de Google (UID), obtenidos al iniciar sesión.</p>
+      <p style="margin-left:16px"><b>b) De terceros capturados por el usuario</b> (clientes y otorgantes de actos notariales): nombre, RFC, CURP, domicilio, teléfono, correo, nacionalidad, identificación oficial, datos de representantes, montos y características de operaciones. Estos datos pueden incluir información sensible bajo la LFPDPPP.</p>
+
+      <h3 style="color:var(--azul);margin-top:14px;margin-bottom:6px;font-size:14px">3. Finalidad del tratamiento</h3>
+      <p>Los datos se utilizan para: (i) autenticar al usuario y controlar accesos; (ii) generar, almacenar y consultar el expediente de identificación de clientes exigido por el art. 18 de la LFPIORPI; (iii) calcular umbrales de aviso al SAT/UIF; (iv) generar los archivos XML de aviso conforme al esquema FEP de la UIF-SHCP; (v) llevar control histórico y estadístico de operaciones vulnerables.</p>
+
+      <h3 style="color:var(--azul);margin-top:14px;margin-bottom:6px;font-size:14px">4. Almacenamiento y transferencias</h3>
+      <p>Los datos se almacenan en Google Firebase / Firestore (Google LLC, EE.UU.), con autenticación vía Google Identity Platform. No se transfieren datos a terceros distintos de los señalados, salvo cuando exista obligación legal (autoridades fiscales, UIF, autoridades judiciales). El usuario de la plataforma es corresponsable del tratamiento de los datos de terceros que él captura.</p>
+
+      <h3 style="color:var(--azul);margin-top:14px;margin-bottom:6px;font-size:14px">5. Conservación</h3>
+      <p>Los datos se conservan mientras el usuario mantenga cuenta activa y por al menos cinco (5) años posteriores al acto notarial respectivo, conforme al art. 21 de la LFPIORPI.</p>
+
+      <h3 style="color:var(--azul);margin-top:14px;margin-bottom:6px;font-size:14px">6. Derechos ARCO</h3>
+      <p>Tienes derecho a: <b>Acceder</b> a tus datos, <b>Rectificar</b> los inexactos, <b>Cancelar</b> su uso o <b>Oponerte</b> al tratamiento, así como a revocar tu consentimiento. Para ejercer estos derechos envía una solicitud a <b>roberto.cardenasl77@gmail.com</b> indicando tu nombre, correo registrado y el derecho que deseas ejercer. Se atenderá en un plazo máximo de 20 días hábiles.</p>
+
+      <h3 style="color:var(--azul);margin-top:14px;margin-bottom:6px;font-size:14px">7. Seguridad</h3>
+      <p>Se aplican medidas técnicas razonables: autenticación obligatoria con Google, control de roles, reglas de seguridad de Firestore que aíslan los datos por notaría, y cifrado en tránsito (HTTPS) y en reposo (Google Cloud).</p>
+
+      <h3 style="color:var(--azul);margin-top:14px;margin-bottom:6px;font-size:14px">8. Cambios al aviso</h3>
+      <p>Cualquier modificación se notificará a través de esta misma pantalla. El uso continuo de la plataforma posterior a un cambio implica la aceptación del aviso actualizado.</p>
+
+      <h3 style="color:var(--azul);margin-top:14px;margin-bottom:6px;font-size:14px">9. Autoridad</h3>
+      <p>Si consideras que tus derechos han sido vulnerados puedes acudir al Instituto Nacional de Transparencia, Acceso a la Información y Protección de Datos Personales (INAI) — <a href="https://www.inai.org.mx" target="_blank" rel="noopener" style="color:var(--azul)">www.inai.org.mx</a>.</p>
+    </div>
+    <div style="border-top:1px solid var(--borde);padding-top:12px;margin-top:16px;text-align:right;position:sticky;bottom:0;background:#fff">
+      <button onclick="document.getElementById('modal-privacidad').classList.remove('open')" style="padding:8px 20px;background:var(--azul);color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600">Cerrar</button>
+    </div>
   </div>
 </div>
 
